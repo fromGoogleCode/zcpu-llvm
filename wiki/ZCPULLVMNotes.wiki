@@ -79,7 +79,7 @@ knowledge, all instructions that don't explicitly work only on registers should
 accept a memory address directly; however, I recall some instructions not
 working correctly when both operands were memory addresses.
 
-= Byte Size
+= Byte Size =
 
 The ZCPU's native byte size is a float. The size of the float depends, and a
 program can change the size by writing to a special register. The size starts
