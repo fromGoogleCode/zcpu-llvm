@@ -15,7 +15,7 @@ correct in describing such features. They may also be added to the documentation
 for the ZCPU at any time, so watch out. In addition, the documentation for the
 ZCPU might not be correct in some places.
 
-= Code Performance =
+== Code Performance ==
 
 ZCPU has a single execution "pipe": in any given cycle, only one instruction
 will be executing. In addition, all ZCPU instructions take the same amount of
@@ -79,7 +79,7 @@ knowledge, all instructions that don't explicitly work only on registers should
 accept a memory address directly; however, I recall some instructions not
 working correctly when both operands were memory addresses.
 
-= Byte Size =
+== Byte Size ==
 
 The ZCPU's native byte size is a float. The size of the float depends, and a
 program can change the size by writing to a special register. The size starts
@@ -94,7 +94,7 @@ This has a big implication: ALL values in the ZCPU are this size. Memory
 addresses, memory byte values, register sizes, you name it. I can't think of any
 compiler that is ready to handle such a thing.
 
-= Registers =
+== Registers ==
 
 Note that the ZCPU has several general-purpose registers, several segment
 registers, and a plethora of special registers (on a real CPU, those special
@@ -109,7 +109,7 @@ to allocate them; however, the program author might find them useful, so I
 define them for target definition completeness and so the author can write
 inline assembly code to use them.
 
-= Miscellaneous Notes =
+== Miscellaneous Notes ==
 
 A JIT is currently not implemented, nor is it planned, because the ZCPU
 "computer" is generally not nearly powerful enough to host a VM.
