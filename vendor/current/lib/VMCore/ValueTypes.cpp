@@ -36,17 +36,17 @@ EVT EVT::getExtendedVectorVT(LLVMContext &Context, EVT VT,
 
 bool EVT::isExtendedFloatingPoint() const {
   assert(isExtended() && "Type is not extended!");
-  return LLVMTy->isFPOrFPVector();
+  return LLVMTy->isFPOrFPVectorTy();
 }
 
 bool EVT::isExtendedInteger() const {
   assert(isExtended() && "Type is not extended!");
-  return LLVMTy->isIntOrIntVector();
+  return LLVMTy->isIntOrIntVectorTy();
 }
 
 bool EVT::isExtendedVector() const {
   assert(isExtended() && "Type is not extended!");
-  return isa<VectorType>(LLVMTy);
+  return LLVMTy->isVectorTy();
 }
 
 bool EVT::isExtended64BitVector() const {
@@ -59,6 +59,10 @@ bool EVT::isExtended128BitVector() const {
 
 bool EVT::isExtended256BitVector() const {
   return isExtendedVector() && getSizeInBits() == 256;
+}
+
+bool EVT::isExtended512BitVector() const {
+  return isExtendedVector() && getSizeInBits() == 512;
 }
 
 EVT EVT::getExtendedVectorElementType() const {
@@ -121,11 +125,13 @@ std::string EVT::getEVTString() const {
   case MVT::v1i64:   return "v1i64";
   case MVT::v2i64:   return "v2i64";
   case MVT::v4i64:   return "v4i64";
+  case MVT::v8i64:   return "v8i64";
   case MVT::v2f32:   return "v2f32";
   case MVT::v4f32:   return "v4f32";
   case MVT::v8f32:   return "v8f32";
   case MVT::v2f64:   return "v2f64";
   case MVT::v4f64:   return "v4f64";
+  case MVT::Metadata:return "Metadata";
   }
 }
 
@@ -164,11 +170,13 @@ const Type *EVT::getTypeForEVT(LLVMContext &Context) const {
   case MVT::v1i64:   return VectorType::get(Type::getInt64Ty(Context), 1);
   case MVT::v2i64:   return VectorType::get(Type::getInt64Ty(Context), 2);
   case MVT::v4i64:   return VectorType::get(Type::getInt64Ty(Context), 4);
+  case MVT::v8i64:   return VectorType::get(Type::getInt64Ty(Context), 8);
   case MVT::v2f32:   return VectorType::get(Type::getFloatTy(Context), 2);
   case MVT::v4f32:   return VectorType::get(Type::getFloatTy(Context), 4);
   case MVT::v8f32:   return VectorType::get(Type::getFloatTy(Context), 8);
   case MVT::v2f64:   return VectorType::get(Type::getDoubleTy(Context), 2);
   case MVT::v4f64:   return VectorType::get(Type::getDoubleTy(Context), 4); 
+  case MVT::Metadata: return Type::getMetadataTy(Context);
  }
 }
 

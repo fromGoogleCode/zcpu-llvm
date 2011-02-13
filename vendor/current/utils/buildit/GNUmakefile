@@ -32,13 +32,11 @@ DSTROOT = $(OBJROOT)/../dst
 
 #######################################################################
 
-PREFIX = /usr/local
+PREFIX = /Developer/usr/local
 
 # Unless assertions are forced on in the GMAKE command line, disable them.
-ifdef ENABLE_ASSERTIONS
-LLVM_ASSERTIONS := yes
-else
-LLVM_ASSERTIONS := no
+ifndef ENABLE_ASSERTIONS
+ENABLE_ASSERTIONS := no
 endif
 
 # Default is optimized build.
@@ -47,6 +45,13 @@ LLVM_OPTIMIZED := no
 else
 LLVM_OPTIMIZED := yes
 endif
+
+# Default to not install libLTO.dylib.
+INSTALL_LIBLTO := no
+
+# Default to do a native build, not a cross-build for an ARM host or simulator.
+ARM_HOSTED_BUILD := no
+IOS_SIM_BUILD := no
 
 ifndef RC_ProjectSourceVersion
 RC_ProjectSourceVersion = 9999
@@ -59,11 +64,21 @@ endif
 # NOTE : Always put version numbers at the end because they are optional.
 install: $(OBJROOT) $(SYMROOT) $(DSTROOT)
 	cd $(OBJROOT) && \
-	  $(SRC)/build_llvm "$(RC_ARCHS)" "$(TARGETS)" \
+	  $(SRC)/utils/buildit/build_llvm "$(RC_ARCHS)" "$(TARGETS)" \
 	    $(SRC) $(PREFIX) $(DSTROOT) $(SYMROOT) \
-	    $(LLVM_ASSERTIONS) $(LLVM_OPTIMIZED) \
+	    $(ENABLE_ASSERTIONS) $(LLVM_OPTIMIZED) $(INSTALL_LIBLTO) \
+	    $(ARM_HOSTED_BUILD) $(IOS_SIM_BUILD) \
 	    $(RC_ProjectSourceVersion) $(RC_ProjectSourceSubversion) 
 
+EmbeddedHosted:
+	$(MAKE) ARM_HOSTED_BUILD=yes PREFIX=/usr/local install
+
+# When building for the iOS simulator, MACOSX_DEPLOYMENT_TARGET is not set
+# by default, but it needs to be set when building tools that run on the host
+# (e.g., tblgen), so set it here.
+EmbeddedSim:
+	export MACOSX_DEPLOYMENT_TARGET=`sw_vers -productVersion`; \
+	$(MAKE) IOS_SIM_BUILD=yes PREFIX=$(SDKROOT)/usr/local install
 
 # installhdrs does nothing, because the headers aren't useful until
 # the compiler is installed.
@@ -85,6 +100,7 @@ installsrc:
 	                        -type f -a -name .DS_Store -o \
 				-name \*~ -o -name .\#\* \) \
 	  -exec rm -rf {} \;
+	rm -rf "$(SRCROOT)/test"
 
 #######################################################################
 
@@ -112,4 +128,4 @@ clean:
 $(OBJROOT) $(SYMROOT) $(DSTROOT):
 	mkdir -p $@
 
-.PHONY: install installsrc clean
+.PHONY: install installsrc clean EmbeddedHosted EmbeddedSim

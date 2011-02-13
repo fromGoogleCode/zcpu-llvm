@@ -25,6 +25,7 @@
 
 #include "BrainF.h"
 #include "llvm/Constants.h"
+#include "llvm/Instructions.h"
 #include "llvm/Intrinsics.h"
 #include "llvm/ADT/STLExtras.h"
 #include <iostream>
@@ -53,10 +54,10 @@ void BrainF::header(LLVMContext& C) {
 
   //Function prototypes
 
-  //declare void @llvm.memset.i32(i8 *, i8, i32, i32)
-  const Type *Tys[] = { Type::getInt32Ty(C) };
+  //declare void @llvm.memset.p0i8.i32(i8 *, i8, i32, i32, i1)
+  const Type *Tys[] = { Type::getInt8PtrTy(C), Type::getInt32Ty(C) };
   Function *memset_func = Intrinsic::getDeclaration(module, Intrinsic::memset,
-                                                    Tys, 1);
+                                                    Tys, 2);
 
   //declare i32 @getchar()
   getchar_func = cast<Function>(module->
@@ -78,15 +79,23 @@ void BrainF::header(LLVMContext& C) {
 
   //%arr = malloc i8, i32 %d
   ConstantInt *val_mem = ConstantInt::get(C, APInt(32, memtotal));
-  ptr_arr = builder->CreateMalloc(IntegerType::getInt8Ty(C), val_mem, "arr");
+  BasicBlock* BB = builder->GetInsertBlock();
+  const Type* IntPtrTy = IntegerType::getInt32Ty(C);
+  const Type* Int8Ty = IntegerType::getInt8Ty(C);
+  Constant* allocsize = ConstantExpr::getSizeOf(Int8Ty);
+  allocsize = ConstantExpr::getTruncOrBitCast(allocsize, IntPtrTy);
+  ptr_arr = CallInst::CreateMalloc(BB, IntPtrTy, Int8Ty, allocsize, val_mem, 
+                                   NULL, "arr");
+  BB->getInstList().push_back(cast<Instruction>(ptr_arr));
 
-  //call void @llvm.memset.i32(i8 *%arr, i8 0, i32 %d, i32 1)
+  //call void @llvm.memset.p0i8.i32(i8 *%arr, i8 0, i32 %d, i32 1, i1 0)
   {
     Value *memset_params[] = {
       ptr_arr,
       ConstantInt::get(C, APInt(8, 0)),
       val_mem,
-      ConstantInt::get(C, APInt(32, 1))
+      ConstantInt::get(C, APInt(32, 1)),
+      ConstantInt::get(C, APInt(1, 0))
     };
 
     CallInst *memset_call = builder->
@@ -112,8 +121,8 @@ void BrainF::header(LLVMContext& C) {
   //brainf.end:
   endbb = BasicBlock::Create(C, label, brainf_func);
 
-  //free i8 *%arr
-  new FreeInst(ptr_arr, endbb);
+  //call free(i8 *%arr)
+  endbb->getInstList().push_back(CallInst::CreateFree(ptr_arr, endbb));
 
   //ret void
   ReturnInst::Create(C, endbb);

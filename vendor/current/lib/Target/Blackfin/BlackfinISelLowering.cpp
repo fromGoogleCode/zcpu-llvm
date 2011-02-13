@@ -22,10 +22,10 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/SelectionDAG.h"
-#include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/ADT/VectorExtras.h"
 #include "llvm/Support/Debug.h"
-
+#include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//
@@ -114,12 +114,7 @@ BlackfinTargetLowering::BlackfinTargetLowering(TargetMachine &TM)
   // READCYCLECOUNTER needs special type legalization.
   setOperationAction(ISD::READCYCLECOUNTER, MVT::i64, Custom);
 
-  // We don't have line number support yet.
-  setOperationAction(ISD::DBG_STOPPOINT, MVT::Other, Expand);
-  setOperationAction(ISD::DEBUG_LOC, MVT::Other, Expand);
-  setOperationAction(ISD::DBG_LABEL, MVT::Other, Expand);
   setOperationAction(ISD::EH_LABEL, MVT::Other, Expand);
-  setOperationAction(ISD::DECLARE, MVT::Other, Expand);
 
   // Use the default implementation.
   setOperationAction(ISD::VACOPY, MVT::Other, Expand);
@@ -144,15 +139,16 @@ MVT::SimpleValueType BlackfinTargetLowering::getSetCCResultType(EVT VT) const {
 }
 
 SDValue BlackfinTargetLowering::LowerGlobalAddress(SDValue Op,
-                                                   SelectionDAG &DAG) {
+                                                   SelectionDAG &DAG) const {
   DebugLoc DL = Op.getDebugLoc();
-  GlobalValue *GV = cast<GlobalAddressSDNode>(Op)->getGlobal();
+  const GlobalValue *GV = cast<GlobalAddressSDNode>(Op)->getGlobal();
 
-  Op = DAG.getTargetGlobalAddress(GV, MVT::i32);
+  Op = DAG.getTargetGlobalAddress(GV, DL, MVT::i32);
   return DAG.getNode(BFISD::Wrapper, DL, MVT::i32, Op);
 }
 
-SDValue BlackfinTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) {
+SDValue BlackfinTargetLowering::LowerJumpTable(SDValue Op,
+                                               SelectionDAG &DAG) const {
   DebugLoc DL = Op.getDebugLoc();
   int JTI = cast<JumpTableSDNode>(Op)->getIndex();
 
@@ -162,11 +158,12 @@ SDValue BlackfinTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) {
 
 SDValue
 BlackfinTargetLowering::LowerFormalArguments(SDValue Chain,
-                                             unsigned CallConv, bool isVarArg,
+                                             CallingConv::ID CallConv, bool isVarArg,
                                             const SmallVectorImpl<ISD::InputArg>
                                                &Ins,
                                              DebugLoc dl, SelectionDAG &DAG,
-                                             SmallVectorImpl<SDValue> &InVals) {
+                                             SmallVectorImpl<SDValue> &InVals)
+                                               const {
 
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
@@ -174,7 +171,7 @@ BlackfinTargetLowering::LowerFormalArguments(SDValue Chain,
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, isVarArg, getTargetMachine(),
                  ArgLocs, *DAG.getContext());
-  CCInfo.AllocateStack(12, 4);	// ABI requires 12 bytes stack space
+  CCInfo.AllocateStack(12, 4);  // ABI requires 12 bytes stack space
   CCInfo.AnalyzeFormalArguments(Ins, CC_Blackfin);
 
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
@@ -207,10 +204,11 @@ BlackfinTargetLowering::LowerFormalArguments(SDValue Chain,
       InVals.push_back(ArgValue);
     } else {
       assert(VA.isMemLoc() && "CCValAssign must be RegLoc or MemLoc");
-      unsigned ObjSize = VA.getLocVT().getStoreSizeInBits()/8;
-      int FI = MFI->CreateFixedObject(ObjSize, VA.getLocMemOffset());
+      unsigned ObjSize = VA.getLocVT().getStoreSize();
+      int FI = MFI->CreateFixedObject(ObjSize, VA.getLocMemOffset(), true);
       SDValue FIN = DAG.getFrameIndex(FI, MVT::i32);
-      InVals.push_back(DAG.getLoad(VA.getValVT(), dl, Chain, FIN, NULL, 0));
+      InVals.push_back(DAG.getLoad(VA.getValVT(), dl, Chain, FIN, NULL, 0,
+                                   false, false, 0));
     }
   }
 
@@ -219,9 +217,10 @@ BlackfinTargetLowering::LowerFormalArguments(SDValue Chain,
 
 SDValue
 BlackfinTargetLowering::LowerReturn(SDValue Chain,
-                                    unsigned CallConv, bool isVarArg,
+                                    CallingConv::ID CallConv, bool isVarArg,
                                     const SmallVectorImpl<ISD::OutputArg> &Outs,
-                                    DebugLoc dl, SelectionDAG &DAG) {
+                                    const SmallVectorImpl<SDValue> &OutVals,
+                                    DebugLoc dl, SelectionDAG &DAG) const {
 
   // CCValAssign - represent the assignment of the return value to locations.
   SmallVector<CCValAssign, 16> RVLocs;
@@ -246,7 +245,7 @@ BlackfinTargetLowering::LowerReturn(SDValue Chain,
   for (unsigned i = 0; i != RVLocs.size(); ++i) {
     CCValAssign &VA = RVLocs[i];
     assert(VA.isRegLoc() && "Can only return in registers!");
-    SDValue Opi = Outs[i].Val;
+    SDValue Opi = OutVals[i];
 
     // Expand to i32 if necessary
     switch (VA.getLocInfo()) {
@@ -276,18 +275,21 @@ BlackfinTargetLowering::LowerReturn(SDValue Chain,
 
 SDValue
 BlackfinTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
-                                  unsigned CallConv, bool isVarArg,
-                                  bool isTailCall,
+                                  CallingConv::ID CallConv, bool isVarArg,
+                                  bool &isTailCall,
                                   const SmallVectorImpl<ISD::OutputArg> &Outs,
+                                  const SmallVectorImpl<SDValue> &OutVals,
                                   const SmallVectorImpl<ISD::InputArg> &Ins,
                                   DebugLoc dl, SelectionDAG &DAG,
-                                  SmallVectorImpl<SDValue> &InVals) {
+                                  SmallVectorImpl<SDValue> &InVals) const {
+  // Blackfin target does not yet support tail call optimization.
+  isTailCall = false;
 
   // Analyze operands of the call, assigning locations to each operand.
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, isVarArg, DAG.getTarget(), ArgLocs,
                  *DAG.getContext());
-  CCInfo.AllocateStack(12, 4);	// ABI requires 12 bytes stack space
+  CCInfo.AllocateStack(12, 4);  // ABI requires 12 bytes stack space
   CCInfo.AnalyzeCallOperands(Outs, CC_Blackfin);
 
   // Get the size of the outgoing arguments stack space requirement.
@@ -300,7 +302,7 @@ BlackfinTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
   // Walk the register/memloc assignments, inserting copies/loads.
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
     CCValAssign &VA = ArgLocs[i];
-    SDValue Arg = Outs[i].Val;
+    SDValue Arg = OutVals[i];
 
     // Promote the value if needed.
     switch (VA.getLocInfo()) {
@@ -331,7 +333,7 @@ BlackfinTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
       OffsetN = DAG.getNode(ISD::ADD, dl, MVT::i32, SPN, OffsetN);
       MemOpChains.push_back(DAG.getStore(Chain, dl, Arg, OffsetN,
                                          PseudoSourceValue::getStack(),
-                                         Offset));
+                                         Offset, false, false, 0));
     }
   }
 
@@ -356,7 +358,7 @@ BlackfinTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
   // turn it into a TargetGlobalAddress node so that legalize doesn't hack it.
   // Likewise ExternalSymbol -> TargetExternalSymbol.
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
-    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), MVT::i32);
+    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), dl, MVT::i32);
   else if (ExternalSymbolSDNode *E = dyn_cast<ExternalSymbolSDNode>(Callee))
     Callee = DAG.getTargetExternalSymbol(E->getSymbol(), MVT::i32);
 
@@ -415,7 +417,7 @@ BlackfinTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
 
 // Expansion of ADDE / SUBE. This is a bit involved since blackfin doesn't have
 // add-with-carry instructions.
-SDValue BlackfinTargetLowering::LowerADDE(SDValue Op, SelectionDAG &DAG) {
+SDValue BlackfinTargetLowering::LowerADDE(SDValue Op, SelectionDAG &DAG) const {
   // Operands: lhs, rhs, carry-in (AC0 flag)
   // Results: sum, carry-out (AC0 flag)
   DebugLoc dl = Op.getDebugLoc();
@@ -423,33 +425,34 @@ SDValue BlackfinTargetLowering::LowerADDE(SDValue Op, SelectionDAG &DAG) {
   unsigned Opcode = Op.getOpcode()==ISD::ADDE ? BF::ADD : BF::SUB;
 
   // zext incoming carry flag in AC0 to 32 bits
-  SDNode* CarryIn = DAG.getTargetNode(BF::MOVE_cc_ac0, dl, MVT::i32,
-                                      /* flag= */ Op.getOperand(2));
-  CarryIn = DAG.getTargetNode(BF::MOVECC_zext, dl, MVT::i32,
-                              SDValue(CarryIn, 0));
+  SDNode* CarryIn = DAG.getMachineNode(BF::MOVE_cc_ac0, dl, MVT::i32,
+                                       /* flag= */ Op.getOperand(2));
+  CarryIn = DAG.getMachineNode(BF::MOVECC_zext, dl, MVT::i32,
+                               SDValue(CarryIn, 0));
 
   // Add operands, produce sum and carry flag
-  SDNode *Sum = DAG.getTargetNode(Opcode, dl, MVT::i32, MVT::Flag,
-                                  Op.getOperand(0), Op.getOperand(1));
+  SDNode *Sum = DAG.getMachineNode(Opcode, dl, MVT::i32, MVT::Flag,
+                                   Op.getOperand(0), Op.getOperand(1));
 
   // Store intermediate carry from Sum
-  SDNode* Carry1 = DAG.getTargetNode(BF::MOVE_cc_ac0, dl, MVT::i32,
-                                     /* flag= */ SDValue(Sum, 1));
+  SDNode* Carry1 = DAG.getMachineNode(BF::MOVE_cc_ac0, dl, MVT::i32,
+                                      /* flag= */ SDValue(Sum, 1));
 
   // Add incoming carry, again producing an output flag
-  Sum = DAG.getTargetNode(Opcode, dl, MVT::i32, MVT::Flag,
-                          SDValue(Sum, 0), SDValue(CarryIn, 0));
+  Sum = DAG.getMachineNode(Opcode, dl, MVT::i32, MVT::Flag,
+                           SDValue(Sum, 0), SDValue(CarryIn, 0));
 
   // Update AC0 with the intermediate carry, producing a flag.
-  SDNode *CarryOut = DAG.getTargetNode(BF::OR_ac0_cc, dl, MVT::Flag,
-                                       SDValue(Carry1, 0));
+  SDNode *CarryOut = DAG.getMachineNode(BF::OR_ac0_cc, dl, MVT::Flag,
+                                        SDValue(Carry1, 0));
 
   // Compose (i32, flag) pair
   SDValue ops[2] = { SDValue(Sum, 0), SDValue(CarryOut, 0) };
   return DAG.getMergeValues(ops, 2, dl);
 }
 
-SDValue BlackfinTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) {
+SDValue BlackfinTargetLowering::LowerOperation(SDValue Op,
+                                               SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
   default:
     Op.getNode()->dump();
@@ -469,7 +472,7 @@ SDValue BlackfinTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) {
 void
 BlackfinTargetLowering::ReplaceNodeResults(SDNode *N,
                                            SmallVectorImpl<SDValue> &Results,
-                                           SelectionDAG &DAG) {
+                                           SelectionDAG &DAG) const {
   DebugLoc dl = N->getDebugLoc();
   switch (N->getOpcode()) {
   default:

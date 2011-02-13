@@ -2,8 +2,46 @@
 // Random ideas for the X86 backend: SSE-specific stuff.
 //===---------------------------------------------------------------------===//
 
-- Consider eliminating the unaligned SSE load intrinsics, replacing them with
-  unaligned LLVM load instructions.
+//===---------------------------------------------------------------------===//
+
+SSE Variable shift can be custom lowered to something like this, which uses a
+small table + unaligned load + shuffle instead of going through memory.
+
+__m128i_shift_right:
+	.byte	  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
+	.byte	 -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+
+...
+__m128i shift_right(__m128i value, unsigned long offset) {
+  return _mm_shuffle_epi8(value,
+               _mm_loadu_si128((__m128 *) (___m128i_shift_right + offset)));
+}
+
+//===---------------------------------------------------------------------===//
+
+SSE has instructions for doing operations on complex numbers, we should pattern
+match them.  Compiling this:
+
+_Complex float f32(_Complex float A, _Complex float B) {
+  return A+B;
+}
+
+into:
+
+_f32:
+	movdqa	%xmm0, %xmm2
+	addss	%xmm1, %xmm2
+	pshufd	$16, %xmm2, %xmm2
+	pshufd	$1, %xmm1, %xmm1
+	pshufd	$1, %xmm0, %xmm0
+	addss	%xmm1, %xmm0
+	pshufd	$16, %xmm0, %xmm1
+	movdqa	%xmm2, %xmm0
+	unpcklps	%xmm1, %xmm0
+	ret
+
+seems silly. 
+
 
 //===---------------------------------------------------------------------===//
 
@@ -36,68 +74,12 @@ The pattern isel got this one right.
 
 //===---------------------------------------------------------------------===//
 
-SSE doesn't have [mem] op= reg instructions.  If we have an SSE instruction
-like this:
-
-  X += y
-
-and the register allocator decides to spill X, it is cheaper to emit this as:
-
-Y += [xslot]
-store Y -> [xslot]
-
-than as:
-
-tmp = [xslot]
-tmp += y
-store tmp -> [xslot]
-
-..and this uses one fewer register (so this should be done at load folding
-time, not at spiller time).  *Note* however that this can only be done
-if Y is dead.  Here's a testcase:
-
-@.str_3 = external global [15 x i8]
-declare void @printf(i32, ...)
-define void @main() {
-build_tree.exit:
-	br label %no_exit.i7
-
-no_exit.i7:		; preds = %no_exit.i7, %build_tree.exit
-	%tmp.0.1.0.i9 = phi double [ 0.000000e+00, %build_tree.exit ],
-                                   [ %tmp.34.i18, %no_exit.i7 ]
-	%tmp.0.0.0.i10 = phi double [ 0.000000e+00, %build_tree.exit ],
-                                    [ %tmp.28.i16, %no_exit.i7 ]
-	%tmp.28.i16 = add double %tmp.0.0.0.i10, 0.000000e+00
-	%tmp.34.i18 = add double %tmp.0.1.0.i9, 0.000000e+00
-	br i1 false, label %Compute_Tree.exit23, label %no_exit.i7
-
-Compute_Tree.exit23:		; preds = %no_exit.i7
-	tail call void (i32, ...)* @printf( i32 0 )
-	store double %tmp.34.i18, double* null
-	ret void
-}
-
-We currently emit:
-
-.BBmain_1:
-        xorpd %XMM1, %XMM1
-        addsd %XMM0, %XMM1
-***     movsd %XMM2, QWORD PTR [%ESP + 8]
-***     addsd %XMM2, %XMM1
-***     movsd QWORD PTR [%ESP + 8], %XMM2
-        jmp .BBmain_1   # no_exit.i7
-
-This is a bugpoint reduced testcase, which is why the testcase doesn't make
-much sense (e.g. its an infinite loop). :)
-
-//===---------------------------------------------------------------------===//
-
 SSE should implement 'select_cc' using 'emulated conditional moves' that use
 pcmp/pand/pandn/por to do a selection instead of a conditional branch:
 
 double %X(double %Y, double %Z, double %A, double %B) {
         %C = setlt double %A, %B
-        %z = add double %Z, 0.0    ;; select operand is not a load
+        %z = fadd double %Z, 0.0    ;; select operand is not a load
         %D = select bool %C, double %Y, double %z
         ret double %D
 }
@@ -122,12 +104,6 @@ LBB_X_2:
 
 //===---------------------------------------------------------------------===//
 
-It's not clear whether we should use pxor or xorps / xorpd to clear XMM
-registers. The choice may depend on subtarget information. We should do some
-more experiments on different x86 machines.
-
-//===---------------------------------------------------------------------===//
-
 Lower memcpy / memset to a series of SSE 128 bit move instructions when it's
 feasible.
 
@@ -148,45 +124,6 @@ of a v4sf value.
 
 Better codegen for vector_shuffles like this { x, 0, 0, 0 } or { x, 0, x, 0}.
 Perhaps use pxor / xorp* to clear a XMM register first?
-
-//===---------------------------------------------------------------------===//
-
-How to decide when to use the "floating point version" of logical ops? Here are
-some code fragments:
-
-	movaps LCPI5_5, %xmm2
-	divps %xmm1, %xmm2
-	mulps %xmm2, %xmm3
-	mulps 8656(%ecx), %xmm3
-	addps 8672(%ecx), %xmm3
-	andps LCPI5_6, %xmm2
-	andps LCPI5_1, %xmm3
-	por %xmm2, %xmm3
-	movdqa %xmm3, (%edi)
-
-	movaps LCPI5_5, %xmm1
-	divps %xmm0, %xmm1
-	mulps %xmm1, %xmm3
-	mulps 8656(%ecx), %xmm3
-	addps 8672(%ecx), %xmm3
-	andps LCPI5_6, %xmm1
-	andps LCPI5_1, %xmm3
-	orps %xmm1, %xmm3
-	movaps %xmm3, 112(%esp)
-	movaps %xmm3, (%ebx)
-
-Due to some minor source change, the later case ended up using orps and movaps
-instead of por and movdqa. Does it matter?
-
-//===---------------------------------------------------------------------===//
-
-X86RegisterInfo::copyRegToReg() returns X86::MOVAPSrr for VR128. Is it possible
-to choose between movaps, movapd, and movdqa based on types of source and
-destination?
-
-How about andps, andpd, and pand? Do we really care about the type of the packed
-elements? If not, why not always use the "ps" variants which are likely to be
-shorter.
 
 //===---------------------------------------------------------------------===//
 
@@ -278,41 +215,6 @@ It also exposes some other problems. See MOV32ri -3 and the spills.
 
 //===---------------------------------------------------------------------===//
 
-http://gcc.gnu.org/bugzilla/show_bug.cgi?id=25500
-
-LLVM is producing bad code.
-
-LBB_main_4:	# cond_true44
-	addps %xmm1, %xmm2
-	subps %xmm3, %xmm2
-	movaps (%ecx), %xmm4
-	movaps %xmm2, %xmm1
-	addps %xmm4, %xmm1
-	addl $16, %ecx
-	incl %edx
-	cmpl $262144, %edx
-	movaps %xmm3, %xmm2
-	movaps %xmm4, %xmm3
-	jne LBB_main_4	# cond_true44
-
-There are two problems. 1) No need to two loop induction variables. We can
-compare against 262144 * 16. 2) Known register coalescer issue. We should
-be able eliminate one of the movaps:
-
-	addps %xmm2, %xmm1    <=== Commute!
-	subps %xmm3, %xmm1
-	movaps (%ecx), %xmm4
-	movaps %xmm1, %xmm1   <=== Eliminate!
-	addps %xmm4, %xmm1
-	addl $16, %ecx
-	incl %edx
-	cmpl $262144, %edx
-	movaps %xmm3, %xmm2
-	movaps %xmm4, %xmm3
-	jne LBB_main_4	# cond_true44
-
-//===---------------------------------------------------------------------===//
-
 Consider:
 
 __m128 test(float a) {
@@ -376,25 +278,9 @@ ret
 ... saving two instructions.
 
 The basic idea is that a reload from a spill slot, can, if only one 4-byte 
-chunk is used, bring in 3 zeros the the one element instead of 4 elements.
+chunk is used, bring in 3 zeros the one element instead of 4 elements.
 This can be used to simplify a variety of shuffle operations, where the
 elements are fixed zeros.
-
-//===---------------------------------------------------------------------===//
-
-__m128d test1( __m128d A, __m128d B) {
-  return _mm_shuffle_pd(A, B, 0x3);
-}
-
-compiles to
-
-shufpd $3, %xmm1, %xmm0
-
-Perhaps it's better to use unpckhpd instead?
-
-unpckhpd %xmm1, %xmm0
-
-Don't know if unpckhpd is faster. But it is shorter.
 
 //===---------------------------------------------------------------------===//
 
@@ -545,10 +431,11 @@ eliminates a constant pool load.  For example, consider:
 
 define i64 @ccosf(float %z.0, float %z.1) nounwind readonly  {
 entry:
- %tmp6 = sub float -0.000000e+00, %z.1		; <float> [#uses=1]
+ %tmp6 = fsub float -0.000000e+00, %z.1		; <float> [#uses=1]
  %tmp20 = tail call i64 @ccoshf( float %tmp6, float %z.0 ) nounwind readonly
  ret i64 %tmp20
 }
+declare i64 @ccoshf(float %z.0, float %z.1) nounwind readonly
 
 This currently compiles to:
 
@@ -916,3 +803,105 @@ cheaper to do fld1 than load from a constant pool for example, so
 "load, add 1.0, store" is better done in the fp stack, etc.
 
 //===---------------------------------------------------------------------===//
+
+The X86 backend should be able to if-convert SSE comparisons like "ucomisd" to
+"cmpsd".  For example, this code:
+
+double d1(double x) { return x == x ? x : x + x; }
+
+Compiles into:
+
+_d1:
+	ucomisd	%xmm0, %xmm0
+	jnp	LBB1_2
+	addsd	%xmm0, %xmm0
+	ret
+LBB1_2:
+	ret
+
+Also, the 'ret's should be shared.  This is PR6032.
+
+//===---------------------------------------------------------------------===//
+
+These should compile into the same code (PR6214): Perhaps instcombine should
+canonicalize the former into the later?
+
+define float @foo(float %x) nounwind {
+  %t = bitcast float %x to i32
+  %s = and i32 %t, 2147483647
+  %d = bitcast i32 %s to float
+  ret float %d
+}
+
+declare float @fabsf(float %n)
+define float @bar(float %x) nounwind {
+  %d = call float @fabsf(float %x)
+  ret float %d
+}
+
+//===---------------------------------------------------------------------===//
+
+This IR (from PR6194):
+
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
+target triple = "x86_64-apple-darwin10.0.0"
+
+%0 = type { double, double }
+%struct.float3 = type { float, float, float }
+
+define void @test(%0, %struct.float3* nocapture %res) nounwind noinline ssp {
+entry:
+  %tmp18 = extractvalue %0 %0, 0                  ; <double> [#uses=1]
+  %tmp19 = bitcast double %tmp18 to i64           ; <i64> [#uses=1]
+  %tmp20 = zext i64 %tmp19 to i128                ; <i128> [#uses=1]
+  %tmp10 = lshr i128 %tmp20, 32                   ; <i128> [#uses=1]
+  %tmp11 = trunc i128 %tmp10 to i32               ; <i32> [#uses=1]
+  %tmp12 = bitcast i32 %tmp11 to float            ; <float> [#uses=1]
+  %tmp5 = getelementptr inbounds %struct.float3* %res, i64 0, i32 1 ; <float*> [#uses=1]
+  store float %tmp12, float* %tmp5
+  ret void
+}
+
+Compiles to:
+
+_test:                                  ## @test
+	movd	%xmm0, %rax
+	shrq	$32, %rax
+	movl	%eax, 4(%rdi)
+	ret
+
+This would be better kept in the SSE unit by treating XMM0 as a 4xfloat and
+doing a shuffle from v[1] to v[0] then a float store.
+
+//===---------------------------------------------------------------------===//
+
+On SSE4 machines, we compile this code:
+
+define <2 x float> @test2(<2 x float> %Q, <2 x float> %R,
+       <2 x float> *%P) nounwind {
+  %Z = fadd <2 x float> %Q, %R
+
+  store <2 x float> %Z, <2 x float> *%P
+  ret <2 x float> %Z
+}
+
+into:
+
+_test2:                                 ## @test2
+## BB#0:
+	insertps	$0, %xmm2, %xmm2
+	insertps	$16, %xmm3, %xmm2
+	insertps	$0, %xmm0, %xmm3
+	insertps	$16, %xmm1, %xmm3
+	addps	%xmm2, %xmm3
+	movq	%xmm3, (%rdi)
+	movaps	%xmm3, %xmm0
+	pshufd	$1, %xmm3, %xmm1
+                                        ## kill: XMM1<def> XMM1<kill>
+	ret
+
+The insertps's of $0 are pointless complex copies.
+
+//===---------------------------------------------------------------------===//
+
+

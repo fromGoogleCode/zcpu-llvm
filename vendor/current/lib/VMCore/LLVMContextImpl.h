@@ -1,4 +1,4 @@
-//===----------------- LLVMContextImpl.h - Implementation ------*- C++ -*--===//
+//===-- LLVMContextImpl.h - The LLVMContextImpl opaque class ----*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -21,13 +21,14 @@
 #include "llvm/LLVMContext.h"
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
-#include "llvm/System/Mutex.h"
-#include "llvm/System/RWMutex.h"
+#include "llvm/Metadata.h"
 #include "llvm/Assembly/Writer.h"
+#include "llvm/Support/ValueHandle.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 #include <vector>
 
@@ -35,8 +36,6 @@ namespace llvm {
 
 class ConstantInt;
 class ConstantFP;
-class MDString;
-class MDNode;
 class LLVMContext;
 class Type;
 class Value;
@@ -63,7 +62,6 @@ struct DenseMapAPIntKeyInfo {
   static bool isEqual(const KeyTy &LHS, const KeyTy &RHS) {
     return LHS == RHS;
   }
-  static bool isPod() { return false; }
 };
 
 struct DenseMapAPFloatKeyInfo {
@@ -90,12 +88,34 @@ struct DenseMapAPFloatKeyInfo {
   static bool isEqual(const KeyTy &LHS, const KeyTy &RHS) {
     return LHS == RHS;
   }
-  static bool isPod() { return false; }
 };
 
+/// DebugRecVH - This is a CallbackVH used to keep the Scope -> index maps
+/// up to date as MDNodes mutate.  This class is implemented in DebugLoc.cpp.
+class DebugRecVH : public CallbackVH {
+  /// Ctx - This is the LLVM Context being referenced.
+  LLVMContextImpl *Ctx;
+  
+  /// Idx - The index into either ScopeRecordIdx or ScopeInlinedAtRecords that
+  /// this reference lives in.  If this is zero, then it represents a
+  /// non-canonical entry that has no DenseMap value.  This can happen due to
+  /// RAUW.
+  int Idx;
+public:
+  DebugRecVH(MDNode *n, LLVMContextImpl *ctx, int idx)
+    : CallbackVH(n), Ctx(ctx), Idx(idx) {}
+  
+  MDNode *get() const {
+    return cast_or_null<MDNode>(getValPtr());
+  }
+  
+  virtual void deleted();
+  virtual void allUsesReplacedWith(Value *VNew);
+};
+  
 class LLVMContextImpl {
 public:
-  sys::SmartRWMutex<true> ConstantsLock;
+  void *InlineAsmDiagHandler, *InlineAsmDiagContext;
   
   typedef DenseMap<DenseMapAPIntKeyInfo::KeyTy, ConstantInt*, 
                          DenseMapAPIntKeyInfo> IntMapTy;
@@ -107,45 +127,54 @@ public:
   
   StringMap<MDString*> MDStringCache;
   
-  ValueMap<char, Type, ConstantAggregateZero> AggZeroConstants;
-
-  typedef ValueMap<std::vector<Value*>, Type, MDNode, true /*largekey*/> 
-  MDNodeMapTy;
-
-  MDNodeMapTy MDNodes;
+  FoldingSet<MDNode> MDNodeSet;
+  // MDNodes may be uniqued or not uniqued.  When they're not uniqued, they
+  // aren't in the MDNodeSet, but they're still shared between objects, so no
+  // one object can destroy them.  This set allows us to at least destroy them
+  // on Context destruction.
+  SmallPtrSet<MDNode*, 1> NonUniquedMDNodes;
   
-  typedef ValueMap<std::vector<Constant*>, ArrayType, 
+  ConstantUniqueMap<char, Type, ConstantAggregateZero> AggZeroConstants;
+
+  typedef ConstantUniqueMap<std::vector<Constant*>, ArrayType,
     ConstantArray, true /*largekey*/> ArrayConstantsTy;
   ArrayConstantsTy ArrayConstants;
   
-  typedef ValueMap<std::vector<Constant*>, StructType,
-                   ConstantStruct, true /*largekey*/> StructConstantsTy;
+  typedef ConstantUniqueMap<std::vector<Constant*>, StructType,
+    ConstantStruct, true /*largekey*/> StructConstantsTy;
   StructConstantsTy StructConstants;
   
-  typedef ValueMap<std::vector<Constant*>, VectorType,
-                   ConstantVector> VectorConstantsTy;
+  typedef ConstantUniqueMap<std::vector<Constant*>, VectorType,
+                            ConstantVector> VectorConstantsTy;
   VectorConstantsTy VectorConstants;
   
-  ValueMap<char, PointerType, ConstantPointerNull> NullPtrConstants;
+  ConstantUniqueMap<char, PointerType, ConstantPointerNull> NullPtrConstants;
+  ConstantUniqueMap<char, Type, UndefValue> UndefValueConstants;
   
-  ValueMap<char, Type, UndefValue> UndefValueConstants;
-  
-  ValueMap<ExprMapKeyType, Type, ConstantExpr> ExprConstants;
+  DenseMap<std::pair<Function*, BasicBlock*> , BlockAddress*> BlockAddresses;
+  ConstantUniqueMap<ExprMapKeyType, Type, ConstantExpr> ExprConstants;
+
+  ConstantUniqueMap<InlineAsmKeyType, PointerType, InlineAsm> InlineAsms;
   
   ConstantInt *TheTrueVal;
   ConstantInt *TheFalseVal;
   
-  // Lock used for guarding access to the leak detector
-  sys::SmartMutex<true> LLVMObjectsLock;
   LeakDetectorImpl<Value> LLVMObjects;
   
-  // Lock used for guarding access to the type maps.
-  sys::SmartMutex<true> TypeMapLock;
-  
-  // Recursive lock used for guarding access to AbstractTypeUsers.
-  // NOTE: The true template parameter means this will no-op when we're not in
-  // multithreaded mode.
-  sys::SmartMutex<true> AbstractTypeUsersLock;
+  // Basic type instances.
+  const Type VoidTy;
+  const Type LabelTy;
+  const Type FloatTy;
+  const Type DoubleTy;
+  const Type MetadataTy;
+  const Type X86_FP80Ty;
+  const Type FP128Ty;
+  const Type PPC_FP128Ty;
+  const IntegerType Int1Ty;
+  const IntegerType Int8Ty;
+  const IntegerType Int16Ty;
+  const IntegerType Int32Ty;
+  const IntegerType Int64Ty;
 
   // Concrete/Abstract TypeDescriptions - We lazily calculate type descriptions
   // for types as they are needed.  Because resolution of types must invalidate
@@ -160,65 +189,54 @@ public:
   TypeMap<FunctionValType, FunctionType> FunctionTypes;
   TypeMap<StructValType, StructType> StructTypes;
   TypeMap<IntegerValType, IntegerType> IntegerTypes;
-  
-  const Type *VoidTy;
-  const Type *LabelTy;
-  const Type *FloatTy;
-  const Type *DoubleTy;
-  const Type *MetadataTy;
-  const Type *X86_FP80Ty;
-  const Type *FP128Ty;
-  const Type *PPC_FP128Ty;
-  
-  const IntegerType *Int1Ty;
-  const IntegerType *Int8Ty;
-  const IntegerType *Int16Ty;
-  const IntegerType *Int32Ty;
-  const IntegerType *Int64Ty;
-  
+
+  // Opaque types are not structurally uniqued, so don't use TypeMap.
+  typedef SmallPtrSet<const OpaqueType*, 8> OpaqueTypesTy;
+  OpaqueTypesTy OpaqueTypes;
+
+  /// Used as an abstract type that will never be resolved.
+  OpaqueType *const AlwaysOpaqueTy;
+
+
   /// ValueHandles - This map keeps track of all of the value handles that are
   /// watching a Value*.  The Value::HasValueHandle bit is used to know
   // whether or not a value has an entry in this map.
   typedef DenseMap<Value*, ValueHandleBase*> ValueHandlesTy;
   ValueHandlesTy ValueHandles;
   
-  LLVMContextImpl(LLVMContext &C) : TheTrueVal(0), TheFalseVal(0),
-    VoidTy(new Type(C, Type::VoidTyID)),
-    LabelTy(new Type(C, Type::LabelTyID)),
-    FloatTy(new Type(C, Type::FloatTyID)),
-    DoubleTy(new Type(C, Type::DoubleTyID)),
-    MetadataTy(new Type(C, Type::MetadataTyID)),
-    X86_FP80Ty(new Type(C, Type::X86_FP80TyID)),
-    FP128Ty(new Type(C, Type::FP128TyID)),
-    PPC_FP128Ty(new Type(C, Type::PPC_FP128TyID)),
-    Int1Ty(new IntegerType(C, 1)),
-    Int8Ty(new IntegerType(C, 8)),
-    Int16Ty(new IntegerType(C, 16)),
-    Int32Ty(new IntegerType(C, 32)),
-    Int64Ty(new IntegerType(C, 64)) { }
+  /// CustomMDKindNames - Map to hold the metadata string to ID mapping.
+  StringMap<unsigned> CustomMDKindNames;
   
-  ~LLVMContextImpl() {
-    // In principle, we should delete the member types here.  However,
-    // this causes destruction order issues with the types in the TypeMaps.
-    // For now, just leak this, which is at least not a regression from the
-    // previous behavior, though still undesirable.
-#if 0
-    delete VoidTy;
-    delete LabelTy;
-    delete FloatTy;
-    delete DoubleTy;
-    delete MetadataTy;
-    delete X86_FP80Ty;
-    delete FP128Ty;
-    delete PPC_FP128Ty;
-    
-    delete Int1Ty;
-    delete Int8Ty;
-    delete Int16Ty;
-    delete Int32Ty;
-    delete Int64Ty;
-#endif
-  }
+  typedef std::pair<unsigned, TrackingVH<MDNode> > MDPairTy;
+  typedef SmallVector<MDPairTy, 2> MDMapTy;
+
+  /// MetadataStore - Collection of per-instruction metadata used in this
+  /// context.
+  DenseMap<const Instruction *, MDMapTy> MetadataStore;
+  
+  /// ScopeRecordIdx - This is the index in ScopeRecords for an MDNode scope
+  /// entry with no "inlined at" element.
+  DenseMap<MDNode*, int> ScopeRecordIdx;
+  
+  /// ScopeRecords - These are the actual mdnodes (in a value handle) for an
+  /// index.  The ValueHandle ensures that ScopeRecordIdx stays up to date if
+  /// the MDNode is RAUW'd.
+  std::vector<DebugRecVH> ScopeRecords;
+  
+  /// ScopeInlinedAtIdx - This is the index in ScopeInlinedAtRecords for an
+  /// scope/inlined-at pair.
+  DenseMap<std::pair<MDNode*, MDNode*>, int> ScopeInlinedAtIdx;
+  
+  /// ScopeInlinedAtRecords - These are the actual mdnodes (in value handles)
+  /// for an index.  The ValueHandle ensures that ScopeINlinedAtIdx stays up
+  /// to date.
+  std::vector<std::pair<DebugRecVH, DebugRecVH> > ScopeInlinedAtRecords;
+  
+  int getOrAddScopeRecordIdxEntry(MDNode *N, int ExistingIdx);
+  int getOrAddScopeInlinedAtIdxEntry(MDNode *Scope, MDNode *IA,int ExistingIdx);
+  
+  LLVMContextImpl(LLVMContext &C);
+  ~LLVMContextImpl();
 };
 
 }

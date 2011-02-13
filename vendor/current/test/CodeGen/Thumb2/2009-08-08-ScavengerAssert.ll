@@ -1,9 +1,9 @@
-; RUN: llvm-as < %s | llc -mtriple=armv7-eabi -mattr=+vfp2
+; RUN: llc < %s -mtriple=armv7-eabi -mattr=+vfp2
 ; PR4686
 
 @g_d = external global double		; <double*> [#uses=1]
 
-define arm_aapcscc void @foo(float %yIncr) {
+define void @foo(float %yIncr) {
 entry:
 	br i1 undef, label %bb, label %bb4
 

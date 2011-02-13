@@ -21,6 +21,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Assembly/Parser.h"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 using namespace llvm;
@@ -253,7 +254,7 @@ lltok::Kind LLLexer::LexToken() {
   case ';':
     SkipLineComment();
     return LexToken();
-  case '!': return LexMetadata();
+  case '!': return LexExclaim();
   case '0': case '1': case '2': case '3': case '4':
   case '5': case '6': case '7': case '8': case '9':
   case '-':
@@ -421,11 +422,11 @@ static bool JustWhitespaceNewLine(const char *&Ptr) {
   return false;
 }
 
-/// LexMetadata:
-///    !{...}
-///    !42
+/// LexExclaim:
 ///    !foo
-lltok::Kind LLLexer::LexMetadata() {
+///    !
+lltok::Kind LLLexer::LexExclaim() {
+  // Lex a metadata name as a MetadataVar.
   if (isalpha(CurPtr[0])) {
     ++CurPtr;
     while (isalnum(CurPtr[0]) || CurPtr[0] == '-' || CurPtr[0] == '$' ||
@@ -433,9 +434,9 @@ lltok::Kind LLLexer::LexMetadata() {
       ++CurPtr;
 
     StrVal.assign(TokStart+1, CurPtr);   // Skip !
-    return lltok::NamedMD;
+    return lltok::MetadataVar;
   }
-  return lltok::Metadata;
+  return lltok::exclaim;
 }
   
 /// LexIdentifier: Handle several related productions:
@@ -491,6 +492,8 @@ lltok::Kind LLLexer::LexIdentifier() {
 
   KEYWORD(private);
   KEYWORD(linker_private);
+  KEYWORD(linker_private_weak);
+  KEYWORD(linker_private_weak_def_auto);
   KEYWORD(internal);
   KEYWORD(available_externally);
   KEYWORD(linkonce);
@@ -528,6 +531,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(module);
   KEYWORD(asm);
   KEYWORD(sideeffect);
+  KEYWORD(alignstack);
   KEYWORD(gc);
 
   KEYWORD(ccc);
@@ -535,9 +539,11 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(coldcc);
   KEYWORD(x86_stdcallcc);
   KEYWORD(x86_fastcallcc);
+  KEYWORD(x86_thiscallcc);
   KEYWORD(arm_apcscc);
   KEYWORD(arm_aapcscc);
   KEYWORD(arm_aapcs_vfpcc);
+  KEYWORD(msp430_intrcc);
 
   KEYWORD(cc);
   KEYWORD(c);
@@ -555,6 +561,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(readnone);
   KEYWORD(readonly);
 
+  KEYWORD(inlinehint);
   KEYWORD(noinline);
   KEYWORD(alwaysinline);
   KEYWORD(optsize);
@@ -573,6 +580,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(oge); KEYWORD(ord); KEYWORD(uno); KEYWORD(ueq); KEYWORD(une);
 
   KEYWORD(x);
+  KEYWORD(blockaddress);
 #undef KEYWORD
 
   // Keywords for types.
@@ -599,6 +607,14 @@ lltok::Kind LLLexer::LexIdentifier() {
     // Scan CurPtr ahead, seeing if there is just whitespace before the newline.
     if (JustWhitespaceNewLine(CurPtr))
       return lltok::kw_zeroext;
+  } else if (Len == 6 && !memcmp(StartChar, "malloc", 6)) {
+    // FIXME: Remove in LLVM 3.0.
+    // Autoupgrade malloc instruction.
+    return lltok::kw_malloc;
+  } else if (Len == 4 && !memcmp(StartChar, "free", 4)) {
+    // FIXME: Remove in LLVM 3.0.
+    // Autoupgrade malloc instruction.
+    return lltok::kw_free;
   }
 
   // Keywords for instructions.
@@ -634,13 +650,12 @@ lltok::Kind LLLexer::LexIdentifier() {
   INSTKEYWORD(ret,         Ret);
   INSTKEYWORD(br,          Br);
   INSTKEYWORD(switch,      Switch);
+  INSTKEYWORD(indirectbr,  IndirectBr);
   INSTKEYWORD(invoke,      Invoke);
   INSTKEYWORD(unwind,      Unwind);
   INSTKEYWORD(unreachable, Unreachable);
 
-  INSTKEYWORD(malloc,      Malloc);
   INSTKEYWORD(alloca,      Alloca);
-  INSTKEYWORD(free,        Free);
   INSTKEYWORD(load,        Load);
   INSTKEYWORD(store,       Store);
   INSTKEYWORD(getelementptr, GetElementPtr);

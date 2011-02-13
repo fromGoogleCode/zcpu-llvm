@@ -58,25 +58,15 @@ namespace llvm {
       if (isa<ConstantPoolSDNode>(Node))   return true;
       if (isa<JumpTableSDNode>(Node))      return true;
       if (isa<ExternalSymbolSDNode>(Node)) return true;
-      if (isa<MemOperandSDNode>(Node))     return true;
-      if (Node->getOpcode() == ISD::EntryToken) return true;
+      if (isa<BlockAddressSDNode>(Node))   return true;
+      if (Node->getOpcode() == ISD::EntryToken ||
+          isa<MDNodeSDNode>(Node)) return true;
       return false;
     }
 
     /// NewSUnit - Creates a new SUnit and return a ptr to it.
     ///
-    SUnit *NewSUnit(SDNode *N) {
-#ifndef NDEBUG
-      const SUnit *Addr = 0;
-      if (!SUnits.empty())
-        Addr = &SUnits[0];
-#endif
-      SUnits.push_back(SUnit(N, (unsigned)SUnits.size()));
-      assert((Addr == 0 || Addr == &SUnits[0]) &&
-             "SUnits std::vector reallocated on the fly!");
-      SUnits.back().OrigNode = &SUnits.back();
-      return &SUnits.back();
-    }
+    SUnit *NewSUnit(SDNode *N);
 
     /// Clone - Creates a clone of the specified SUnit. It does not copy the
     /// predecessors / successors info nor the temporary scheduling states.
@@ -87,34 +77,21 @@ namespace llvm {
     /// are input.  This SUnit graph is similar to the SelectionDAG, but
     /// excludes nodes that aren't interesting to scheduling, and represents
     /// flagged together nodes with a single SUnit.
-    virtual void BuildSchedGraph();
+    virtual void BuildSchedGraph(AliasAnalysis *AA);
 
     /// ComputeLatency - Compute node latency.
     ///
     virtual void ComputeLatency(SUnit *SU);
 
-    /// CountResults - The results of target nodes have register or immediate
-    /// operands first, then an optional chain, and optional flag operands
-    /// (which do not go into the machine instrs.)
-    static unsigned CountResults(SDNode *Node);
-
-    /// CountOperands - The inputs to target nodes have any actual inputs first,
-    /// followed by special operands that describe memory references, then an
-    /// optional chain operand, then flag operands.  Compute the number of
-    /// actual operands that will go into the resulting MachineInstr.
-    static unsigned CountOperands(SDNode *Node);
-
-    /// ComputeMemOperandsEnd - Find the index one past the last
-    /// MemOperandSDNode operand
-    static unsigned ComputeMemOperandsEnd(SDNode *Node);
-
-    /// EmitNode - Generate machine code for an node and needed dependencies.
-    /// VRBaseMap contains, for each already emitted node, the first virtual
-    /// register number for the results of the node.
+    /// ComputeOperandLatency - Override dependence edge latency using
+    /// operand use/def information
     ///
-    void EmitNode(SDNode *Node, bool IsClone, bool HasClone,
-                  DenseMap<SDValue, unsigned> &VRBaseMap);
-    
+    virtual void ComputeOperandLatency(SUnit *Def, SUnit *Use,
+                                       SDep& dep) const { }
+
+    virtual void ComputeOperandLatency(SDNode *Def, SDNode *Use,
+                                       unsigned OpIdx, SDep& dep) const;
+
     virtual MachineBasicBlock *EmitSchedule();
 
     /// Schedule - Order nodes according to selected style, filling
@@ -129,46 +106,12 @@ namespace llvm {
     virtual void getCustomGraphFeatures(GraphWriter<ScheduleDAG*> &GW) const;
 
   private:
-    /// EmitSubregNode - Generate machine code for subreg nodes.
+    /// ClusterNeighboringLoads - Cluster loads from "near" addresses into
+    /// combined SUnits.
+    void ClusterNeighboringLoads(SDNode *Node);
+    /// ClusterNodes - Cluster certain nodes which should be scheduled together.
     ///
-    void EmitSubregNode(SDNode *Node, 
-                        DenseMap<SDValue, unsigned> &VRBaseMap);
-
-    /// EmitCopyToRegClassNode - Generate machine code for COPY_TO_REGCLASS
-    /// nodes.
-    ///
-    void EmitCopyToRegClassNode(SDNode *Node,
-                                DenseMap<SDValue, unsigned> &VRBaseMap);
-
-    /// getVR - Return the virtual register corresponding to the specified result
-    /// of the specified node.
-    unsigned getVR(SDValue Op, DenseMap<SDValue, unsigned> &VRBaseMap);
-  
-    /// getDstOfCopyToRegUse - If the only use of the specified result number of
-    /// node is a CopyToReg, return its destination register. Return 0 otherwise.
-    unsigned getDstOfOnlyCopyToRegUse(SDNode *Node, unsigned ResNo) const;
-
-    void AddOperand(MachineInstr *MI, SDValue Op, unsigned IIOpNum,
-                    const TargetInstrDesc *II,
-                    DenseMap<SDValue, unsigned> &VRBaseMap);
-
-    /// AddRegisterOperand - Add the specified register as an operand to the
-    /// specified machine instr. Insert register copies if the register is
-    /// not in the required register class.
-    void AddRegisterOperand(MachineInstr *MI, SDValue Op,
-                            unsigned IIOpNum, const TargetInstrDesc *II,
-                            DenseMap<SDValue, unsigned> &VRBaseMap);
-
-    /// EmitCopyFromReg - Generate machine code for an CopyFromReg node or an
-    /// implicit physical register output.
-    void EmitCopyFromReg(SDNode *Node, unsigned ResNo, bool IsClone,
-                         bool IsCloned, unsigned SrcReg,
-                         DenseMap<SDValue, unsigned> &VRBaseMap);
-    
-    void CreateVirtualRegisters(SDNode *Node, MachineInstr *MI,
-                                const TargetInstrDesc &II, bool IsClone,
-                                bool IsCloned,
-                                DenseMap<SDValue, unsigned> &VRBaseMap);
+    void ClusterNodes();
 
     /// BuildSchedUnits, AddSchedEdges - Helper functions for BuildSchedGraph.
     void BuildSchedUnits();

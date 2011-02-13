@@ -19,19 +19,21 @@
 
 #define DEBUG_TYPE "constmerge"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Constants.h"
+#include "llvm/DerivedTypes.h"
 #include "llvm/Module.h"
 #include "llvm/Pass.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Support/Compiler.h"
-#include <map>
 using namespace llvm;
 
 STATISTIC(NumMerged, "Number of global constants merged");
 
 namespace {
-  struct VISIBILITY_HIDDEN ConstantMerge : public ModulePass {
+  struct ConstantMerge : public ModulePass {
     static char ID; // Pass identification, replacement for typeid
-    ConstantMerge() : ModulePass(&ID) {}
+    ConstantMerge() : ModulePass(ID) {}
 
     // run - For this pass, process all of the globals in the module,
     // eliminating duplicate constants.
@@ -41,18 +43,38 @@ namespace {
 }
 
 char ConstantMerge::ID = 0;
-static RegisterPass<ConstantMerge>
-X("constmerge", "Merge Duplicate Global Constants");
+INITIALIZE_PASS(ConstantMerge, "constmerge",
+                "Merge Duplicate Global Constants", false, false);
 
 ModulePass *llvm::createConstantMergePass() { return new ConstantMerge(); }
 
+
+
+/// Find values that are marked as llvm.used.
+static void FindUsedValues(GlobalVariable *LLVMUsed,
+                           SmallPtrSet<const GlobalValue*, 8> &UsedValues) {
+  if (LLVMUsed == 0) return;
+  ConstantArray *Inits = dyn_cast<ConstantArray>(LLVMUsed->getInitializer());
+  if (Inits == 0) return;
+  
+  for (unsigned i = 0, e = Inits->getNumOperands(); i != e; ++i)
+    if (GlobalValue *GV = 
+        dyn_cast<GlobalValue>(Inits->getOperand(i)->stripPointerCasts()))
+      UsedValues.insert(GV);
+}
+
 bool ConstantMerge::runOnModule(Module &M) {
+  // Find all the globals that are marked "used".  These cannot be merged.
+  SmallPtrSet<const GlobalValue*, 8> UsedGlobals;
+  FindUsedValues(M.getGlobalVariable("llvm.used"), UsedGlobals);
+  FindUsedValues(M.getGlobalVariable("llvm.compiler.used"), UsedGlobals);
+  
   // Map unique constant/section pairs to globals.  We don't want to merge
   // globals in different sections.
-  std::map<std::pair<Constant*, std::string>, GlobalVariable*> CMap;
+  DenseMap<Constant*, GlobalVariable*> CMap;
 
   // Replacements - This vector contains a list of replacements to perform.
-  std::vector<std::pair<GlobalVariable*, GlobalVariable*> > Replacements;
+  SmallVector<std::pair<GlobalVariable*, GlobalVariable*>, 32> Replacements;
 
   bool MadeChange = false;
 
@@ -77,19 +99,25 @@ bool ConstantMerge::runOnModule(Module &M) {
         continue;
       }
       
-      // Only process constants with initializers.
-      if (GV->isConstant() && GV->hasDefinitiveInitializer()) {
-        Constant *Init = GV->getInitializer();
+      // Only process constants with initializers in the default addres space.
+      if (!GV->isConstant() ||!GV->hasDefinitiveInitializer() ||
+          GV->getType()->getAddressSpace() != 0 || !GV->getSection().empty() ||
+          // Don't touch values marked with attribute(used).
+          UsedGlobals.count(GV))
+        continue;
+      
+      
+      
+      Constant *Init = GV->getInitializer();
 
-        // Check to see if the initializer is already known.
-        GlobalVariable *&Slot = CMap[std::make_pair(Init, GV->getSection())];
+      // Check to see if the initializer is already known.
+      GlobalVariable *&Slot = CMap[Init];
 
-        if (Slot == 0) {    // Nope, add it to the map.
-          Slot = GV;
-        } else if (GV->hasLocalLinkage()) {    // Yup, this is a duplicate!
-          // Make all uses of the duplicate constant use the canonical version.
-          Replacements.push_back(std::make_pair(GV, Slot));
-        }
+      if (Slot == 0) {    // Nope, add it to the map.
+        Slot = GV;
+      } else if (GV->hasLocalLinkage()) {    // Yup, this is a duplicate!
+        // Make all uses of the duplicate constant use the canonical version.
+        Replacements.push_back(std::make_pair(GV, Slot));
       }
     }
 
@@ -101,11 +129,11 @@ bool ConstantMerge::runOnModule(Module &M) {
     // now.  This avoid invalidating the pointers in CMap, which are unneeded
     // now.
     for (unsigned i = 0, e = Replacements.size(); i != e; ++i) {
-      // Eliminate any uses of the dead global...
+      // Eliminate any uses of the dead global.
       Replacements[i].first->replaceAllUsesWith(Replacements[i].second);
 
-      // Delete the global value from the module...
-      M.getGlobalList().erase(Replacements[i].first);
+      // Delete the global value from the module.
+      Replacements[i].first->eraseFromParent();
     }
 
     NumMerged += Replacements.size();

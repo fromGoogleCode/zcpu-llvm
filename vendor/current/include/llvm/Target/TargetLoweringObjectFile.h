@@ -15,17 +15,21 @@
 #ifndef LLVM_TARGET_TARGETLOWERINGOBJECTFILE_H
 #define LLVM_TARGET_TARGETLOWERINGOBJECTFILE_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/MC/SectionKind.h"
 
 namespace llvm {
+  class MachineModuleInfo;
   class Mangler;
+  class MCAsmInfo;
+  class MCContext;
+  class MCExpr;
   class MCSection;
   class MCSectionMachO;
-  class MCContext;
+  class MCSymbol;
+  class MCStreamer;
   class GlobalValue;
-  class StringRef;
   class TargetMachine;
-  class TargetAsmInfo;
   
 class TargetLoweringObjectFile {
   MCContext *Ctx;
@@ -84,11 +88,27 @@ protected:
   const MCSection *DwarfRangesSection;
   const MCSection *DwarfMacroInfoSection;
   
+  // Extra TLS Variable Data section.  If the target needs to put additional
+  // information for a TLS variable, it'll go here.
+  const MCSection *TLSExtraDataSection;
+  
+  /// SupportsWeakEmptyEHFrame - True if target object file supports a
+  /// weak_definition of constant 0 for an omitted EH frame.
+  bool SupportsWeakOmittedEHFrame;
+  
+  /// IsFunctionEHSymbolGlobal - This flag is set to true if the ".eh" symbol
+  /// for a function should be marked .globl.
+  bool IsFunctionEHSymbolGlobal;
+  
+  /// IsFunctionEHFrameSymbolPrivate - This flag is set to true if the
+  /// "EH_frame" symbol for EH information should be an assembler temporary (aka
+  /// private linkage, aka an L or .L label) or false if it should be a normal
+  /// non-.globl label.  This defaults to true.
+  bool IsFunctionEHFrameSymbolPrivate;
 public:
   
   MCContext &getContext() const { return *Ctx; }
   
-
   virtual ~TargetLoweringObjectFile();
   
   /// Initialize - this method must be called before any actual lowering is
@@ -98,6 +118,15 @@ public:
     Ctx = &ctx;
   }
   
+  bool isFunctionEHSymbolGlobal() const {
+    return IsFunctionEHSymbolGlobal;
+  }
+  bool isFunctionEHFrameSymbolPrivate() const {
+    return IsFunctionEHFrameSymbolPrivate;
+  }
+  bool getSupportsWeakOmittedEHFrame() const {
+    return SupportsWeakOmittedEHFrame;
+  }
   
   const MCSection *getTextSection() const { return TextSection; }
   const MCSection *getDataSection() const { return DataSection; }
@@ -121,6 +150,9 @@ public:
   const MCSection *getDwarfRangesSection() const { return DwarfRangesSection; }
   const MCSection *getDwarfMacroInfoSection() const {
     return DwarfMacroInfoSection;
+  }
+  const MCSection *getTLSExtraDataSection() const {
+    return TLSExtraDataSection;
   }
   
   /// shouldEmitUsedDirectiveFor - This hook allows targets to selectively
@@ -173,155 +205,29 @@ public:
     return 0;
   }
   
-protected:
-  virtual const MCSection *
-  SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
-                         Mangler *Mang, const TargetMachine &TM) const;
-};
-  
-  
-  
-
-class TargetLoweringObjectFileELF : public TargetLoweringObjectFile {
-  mutable void *UniquingMap;
-protected:
-  /// TLSDataSection - Section directive for Thread Local data.
+  /// getExprForDwarfGlobalReference - Return an MCExpr to use for a reference
+  /// to the specified global variable from exception handling information.
   ///
-  const MCSection *TLSDataSection;        // Defaults to ".tdata".
+  virtual const MCExpr *
+  getExprForDwarfGlobalReference(const GlobalValue *GV, Mangler *Mang,
+                                 MachineModuleInfo *MMI, unsigned Encoding,
+                                 MCStreamer &Streamer) const;
+
+  /// 
+  const MCExpr *
+  getExprForDwarfReference(const MCSymbol *Sym, Mangler *Mang,
+                           MachineModuleInfo *MMI, unsigned Encoding,
+                           MCStreamer &Streamer) const;
   
-  /// TLSBSSSection - Section directive for Thread Local uninitialized data.
-  /// Null if this target doesn't support a BSS section.
-  ///
-  const MCSection *TLSBSSSection;         // Defaults to ".tbss".
-  
-  const MCSection *DataRelSection;
-  const MCSection *DataRelLocalSection;
-  const MCSection *DataRelROSection;
-  const MCSection *DataRelROLocalSection;
-  
-  const MCSection *MergeableConst4Section;
-  const MCSection *MergeableConst8Section;
-  const MCSection *MergeableConst16Section;
-  
+  virtual unsigned getPersonalityEncoding() const;
+  virtual unsigned getLSDAEncoding() const;
+  virtual unsigned getFDEEncoding() const;
+  virtual unsigned getTTypeEncoding() const;
+
 protected:
-  const MCSection *getELFSection(StringRef Section, unsigned Type, 
-                                 unsigned Flags, SectionKind Kind,
-                                 bool IsExplicit = false) const;
-public:
-  TargetLoweringObjectFileELF() : UniquingMap(0) {}
-  ~TargetLoweringObjectFileELF();
-  
-  virtual void Initialize(MCContext &Ctx, const TargetMachine &TM);
-  
-  /// getSectionForConstant - Given a constant with the SectionKind, return a
-  /// section that it should be placed in.
-  virtual const MCSection *getSectionForConstant(SectionKind Kind) const;
-  
-  
-  virtual const MCSection *
-  getExplicitSectionGlobal(const GlobalValue *GV, SectionKind Kind, 
-                           Mangler *Mang, const TargetMachine &TM) const;
-  
   virtual const MCSection *
   SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
                          Mangler *Mang, const TargetMachine &TM) const;
-};
-
-  
-  
-class TargetLoweringObjectFileMachO : public TargetLoweringObjectFile {
-  mutable void *UniquingMap;
-  
-  const MCSection *CStringSection;
-  const MCSection *UStringSection;
-  const MCSection *TextCoalSection;
-  const MCSection *ConstTextCoalSection;
-  const MCSection *ConstDataCoalSection;
-  const MCSection *ConstDataSection;
-  const MCSection *DataCoalSection;
-  const MCSection *FourByteConstantSection;
-  const MCSection *EightByteConstantSection;
-  const MCSection *SixteenByteConstantSection;
-  
-  const MCSection *LazySymbolPointerSection;
-  const MCSection *NonLazySymbolPointerSection;
-public:
-  TargetLoweringObjectFileMachO() : UniquingMap(0) {}
-  ~TargetLoweringObjectFileMachO();
-  
-  virtual void Initialize(MCContext &Ctx, const TargetMachine &TM);
-
-  virtual const MCSection *
-  SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
-                         Mangler *Mang, const TargetMachine &TM) const;
-  
-  virtual const MCSection *
-  getExplicitSectionGlobal(const GlobalValue *GV, SectionKind Kind, 
-                           Mangler *Mang, const TargetMachine &TM) const;
-  
-  virtual const MCSection *getSectionForConstant(SectionKind Kind) const;
-  
-  /// shouldEmitUsedDirectiveFor - This hook allows targets to selectively
-  /// decide not to emit the UsedDirective for some symbols in llvm.used.
-  /// FIXME: REMOVE this (rdar://7071300)
-  virtual bool shouldEmitUsedDirectiveFor(const GlobalValue *GV,
-                                          Mangler *) const;
-
-  /// getMachOSection - Return the MCSection for the specified mach-o section.
-  /// This requires the operands to be valid.
-  const MCSectionMachO *getMachOSection(const StringRef &Segment,
-                                        const StringRef &Section,
-                                        unsigned TypeAndAttributes,
-                                        SectionKind K) const {
-    return getMachOSection(Segment, Section, TypeAndAttributes, 0, K);
-  }
-  const MCSectionMachO *getMachOSection(const StringRef &Segment,
-                                        const StringRef &Section,
-                                        unsigned TypeAndAttributes,
-                                        unsigned Reserved2,
-                                        SectionKind K) const;
-
-  /// getTextCoalSection - Return the "__TEXT,__textcoal_nt" section we put weak
-  /// symbols into.
-  const MCSection *getTextCoalSection() const {
-    return TextCoalSection;
-  }
-  
-  /// getLazySymbolPointerSection - Return the section corresponding to
-  /// the .lazy_symbol_pointer directive.
-  const MCSection *getLazySymbolPointerSection() const {
-    return LazySymbolPointerSection;
-  }
-  
-  /// getNonLazySymbolPointerSection - Return the section corresponding to
-  /// the .non_lazy_symbol_pointer directive.
-  const MCSection *getNonLazySymbolPointerSection() const {
-    return NonLazySymbolPointerSection;
-  }
-};
-
-
-
-class TargetLoweringObjectFileCOFF : public TargetLoweringObjectFile {
-  mutable void *UniquingMap;
-public:
-  TargetLoweringObjectFileCOFF() : UniquingMap(0) {}
-  ~TargetLoweringObjectFileCOFF();
-  
-  virtual void Initialize(MCContext &Ctx, const TargetMachine &TM);
-  
-  virtual const MCSection *
-  getExplicitSectionGlobal(const GlobalValue *GV, SectionKind Kind, 
-                           Mangler *Mang, const TargetMachine &TM) const;
-  
-  virtual const MCSection *
-  SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
-                         Mangler *Mang, const TargetMachine &TM) const;
-
-  /// getCOFFSection - Return the MCSection for the specified COFF section.
-  /// FIXME: Switch this to a semantic view eventually.
-  const MCSection *getCOFFSection(const char *Name, bool isDirective,
-                                  SectionKind K) const;
 };
 
 } // end namespace llvm

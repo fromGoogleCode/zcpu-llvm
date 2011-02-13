@@ -44,9 +44,6 @@ public:
 
   const unsigned *getCalleeSavedRegs(const MachineFunction *MF = 0) const;
 
-  const TargetRegisterClass* const* getCalleeSavedRegClasses(
-                                     const MachineFunction *MF = 0) const;
-
   BitVector getReservedRegs(const MachineFunction &MF) const;
   
   bool requiresRegisterScavenging(const MachineFunction &MF) const;
@@ -59,7 +56,7 @@ public:
 
   void eliminateFrameIndex(MachineBasicBlock::iterator II,
                            int SPAdj, RegScavenger *RS = NULL) const;
-                           
+
   void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
                                                 RegScavenger *RS = NULL) const;
 
@@ -70,7 +67,7 @@ public:
   
   // Debug information queries.
   unsigned getRARegister() const;
-  unsigned getFrameRegister(MachineFunction &MF) const;
+  unsigned getFrameRegister(const MachineFunction &MF) const;
   void getInitialFrameState(std::vector<MachineMove> &Moves) const;
 
   //! Return the array of argument passing registers

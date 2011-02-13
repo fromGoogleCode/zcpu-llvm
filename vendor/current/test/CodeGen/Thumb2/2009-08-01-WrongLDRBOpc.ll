@@ -1,4 +1,4 @@
-; RUN: llvm-as < %s | llc -mtriple=thumbv7-apple-darwin9 -mcpu=cortex-a8 -relocation-model=pic -disable-fp-elim | FileCheck %s
+; RUN: llc < %s -mtriple=thumbv7-apple-darwin9 -mcpu=cortex-a8 -relocation-model=pic -disable-fp-elim | FileCheck %s
 
 @csize = external global [100 x [20 x [4 x i8]]]		; <[100 x [20 x [4 x i8]]]*> [#uses=1]
 @vsize = external global [100 x [20 x [4 x i8]]]		; <[100 x [20 x [4 x i8]]]*> [#uses=1]
@@ -6,7 +6,7 @@
 @lefline = external global [100 x [20 x i32]]		; <[100 x [20 x i32]]*> [#uses=1]
 @sep = external global [20 x i32]		; <[20 x i32]*> [#uses=1]
 
-define arm_apcscc void @main(i32 %argc, i8** %argv) noreturn nounwind {
+define void @main(i32 %argc, i8** %argv) noreturn nounwind {
 ; CHECK: main:
 ; CHECK: ldrb
 entry:

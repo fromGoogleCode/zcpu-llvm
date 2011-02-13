@@ -48,7 +48,7 @@ class IntervalPartition : public FunctionPass {
 public:
   static char ID; // Pass identification, replacement for typeid
 
-  IntervalPartition() : FunctionPass(&ID), RootInterval(0) {}
+  IntervalPartition() : FunctionPass(ID), RootInterval(0) {}
 
   // run - Calculate the interval partition for this function
   virtual bool runOnFunction(Function &F);
@@ -60,10 +60,7 @@ public:
   IntervalPartition(IntervalPartition &I, bool);
 
   // print - Show contents in human readable format...
-  virtual void print(std::ostream &O, const Module* = 0) const;
-  void print(std::ostream *O, const Module* M = 0) const {
-    if (O) print(*O, M);
-  }
+  virtual void print(raw_ostream &O, const Module* = 0) const;
 
   // getRootInterval() - Return the root interval that contains the starting
   // block of the function.

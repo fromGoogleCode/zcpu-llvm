@@ -8,8 +8,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "MipsTargetObjectFile.h"
+#include "MipsSubtarget.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/GlobalVariable.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetMachine.h"
@@ -25,14 +27,14 @@ void MipsTargetObjectFile::Initialize(MCContext &Ctx, const TargetMachine &TM){
   TargetLoweringObjectFileELF::Initialize(Ctx, TM);
  
   SmallDataSection =
-    getELFSection(".sdata", MCSectionELF::SHT_PROGBITS,
-                  MCSectionELF::SHF_WRITE | MCSectionELF::SHF_ALLOC,
-                  SectionKind::getDataRel());
+    getContext().getELFSection(".sdata", MCSectionELF::SHT_PROGBITS,
+                               MCSectionELF::SHF_WRITE |MCSectionELF::SHF_ALLOC,
+                               SectionKind::getDataRel());
   
   SmallBSSSection =
-    getELFSection(".sbss", MCSectionELF::SHT_NOBITS,
-                  MCSectionELF::SHF_WRITE | MCSectionELF::SHF_ALLOC,
-                  SectionKind::getBSS());
+    getContext().getELFSection(".sbss", MCSectionELF::SHT_NOBITS,
+                               MCSectionELF::SHF_WRITE |MCSectionELF::SHF_ALLOC,
+                               SectionKind::getBSS());
   
 }
 
@@ -56,6 +58,12 @@ bool MipsTargetObjectFile::IsGlobalInSmallSection(const GlobalValue *GV,
 bool MipsTargetObjectFile::
 IsGlobalInSmallSection(const GlobalValue *GV, const TargetMachine &TM,
                        SectionKind Kind) const {
+
+  // Only use small section for non linux targets.
+  const MipsSubtarget &Subtarget = TM.getSubtarget<MipsSubtarget>();
+  if (Subtarget.isLinux())
+    return false;
+
   // Only global variables, not functions.
   const GlobalVariable *GVA = dyn_cast<GlobalVariable>(GV);
   if (!GVA)

@@ -14,12 +14,14 @@
 #ifndef LLVM_MC_MCVALUE_H
 #define LLVM_MC_MCVALUE_H
 
-#include "llvm/Support/DataTypes.h"
+#include "llvm/System/DataTypes.h"
 #include "llvm/MC/MCSymbol.h"
 #include <cassert>
 
 namespace llvm {
+class MCAsmInfo;
 class MCSymbol;
+class MCSymbolRefExpr;
 class raw_ostream;
 
 /// MCValue - This represents an "assembler immediate".  In its most general
@@ -33,13 +35,13 @@ class raw_ostream;
 /// Note that this class must remain a simple POD value class, because we need
 /// it to live in unions etc.
 class MCValue {
-  MCSymbol *SymA, *SymB;
+  const MCSymbolRefExpr *SymA, *SymB;
   int64_t Cst;
 public:
 
   int64_t getConstant() const { return Cst; }
-  MCSymbol *getSymA() const { return SymA; }
-  MCSymbol *getSymB() const { return SymB; }
+  const MCSymbolRefExpr *getSymA() const { return SymA; }
+  const MCSymbolRefExpr *getSymB() const { return SymB; }
 
   /// isAbsolute - Is this an absolute (as opposed to relocatable) value.
   bool isAbsolute() const { return !SymA && !SymB; }
@@ -49,17 +51,19 @@ public:
   ///
   /// @result - The value's associated section, or null for external or constant
   /// values.
-  const MCSection *getAssociatedSection() const {
-    return SymA ? SymA->getSection() : 0;
-  }
+  //
+  // FIXME: Switch to a tagged section, so this can return the tagged section
+  // value.
+  const MCSection *getAssociatedSection() const;
 
   /// print - Print the value to the stream \arg OS.
-  void print(raw_ostream &OS) const;
-  
+  void print(raw_ostream &OS, const MCAsmInfo *MAI) const;
+
   /// dump - Print the value to stderr.
   void dump() const;
 
-  static MCValue get(MCSymbol *SymA, MCSymbol *SymB = 0, int64_t Val = 0) {
+  static MCValue get(const MCSymbolRefExpr *SymA, const MCSymbolRefExpr *SymB=0,
+                     int64_t Val = 0) {
     MCValue R;
     assert((!SymB || SymA) && "Invalid relocatable MCValue!");
     R.Cst = Val;
@@ -67,7 +71,7 @@ public:
     R.SymB = SymB;
     return R;
   }
-  
+
   static MCValue get(int64_t Val) {
     MCValue R;
     R.Cst = Val;
@@ -75,7 +79,7 @@ public:
     R.SymB = 0;
     return R;
   }
-  
+
 };
 
 } // end namespace llvm

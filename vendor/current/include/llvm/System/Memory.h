@@ -14,7 +14,7 @@
 #ifndef LLVM_SYSTEM_MEMORY_H
 #define LLVM_SYSTEM_MEMORY_H
 
-#include "llvm/Support/DataTypes.h"
+#include "llvm/System/DataTypes.h"
 #include <string>
 
 namespace llvm {
@@ -27,7 +27,7 @@ namespace sys {
   /// @brief Memory block abstraction.
   class MemoryBlock {
   public:
-    MemoryBlock() { }
+    MemoryBlock() : Address(0), Size(0) { }
     MemoryBlock(void *addr, size_t size) : Address(addr), Size(size) { }
     void *base() const { return Address; }
     size_t size() const { return Size; }
@@ -63,7 +63,6 @@ namespace sys {
     ///
     /// On success, this returns false, otherwise it returns true and fills
     /// in *ErrMsg.
-    /// @throws std::string if an error occurred.
     /// @brief Release Read/Write/Execute memory.
     static bool ReleaseRWX(MemoryBlock &block, std::string *ErrMsg = 0);
     

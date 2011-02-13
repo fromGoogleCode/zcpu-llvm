@@ -31,6 +31,7 @@
     <li><a href="#chaining"><tt>AliasAnalysis</tt> chaining behavior</a></li>
     <li><a href="#updating">Updating analysis results for transformations</a></li>
     <li><a href="#implefficiency">Efficiency Issues</a></li>
+    <li><a href="#passmanager">Pass Manager Issues</a></li>
     </ul>
   </li>
 
@@ -116,6 +117,11 @@ as the actual <tt>call</tt> or <tt>invoke</tt> instructions that performs the
 call.  The <tt>AliasAnalysis</tt> interface also exposes some helper methods
 which allow you to get mod/ref information for arbitrary instructions.</p>
 
+<p>All <tt>AliasAnalysis</tt> interfaces require that in queries involving
+multiple values, values which are not
+<a href="LangRef.html#constants">constants</a> are all defined within the
+same function.</p>
+
 </div>
 
 <!-- ======================================================================= -->
@@ -180,9 +186,13 @@ that the accesses alias.</p>
 </div>
   
 <div class="doc_text">
-The <tt>alias</tt> method is the primary interface used to determine whether or
-not two memory objects alias each other.  It takes two memory objects as input
-and returns MustAlias, MayAlias, or NoAlias as appropriate.
+<p>The <tt>alias</tt> method is the primary interface used to determine whether
+or not two memory objects alias each other.  It takes two memory objects as
+input and returns MustAlias, MayAlias, or NoAlias as appropriate.</p>
+
+<p>Like all <tt>AliasAnalysis</tt> interfaces, the <tt>alias</tt> method requires
+that either the two pointer values be defined within the same function, or at
+least one of the values is a <a href="LangRef.html#constants">constant</a>.</p>
 </div>
 
 <!-- _______________________________________________________________________ -->
@@ -191,12 +201,18 @@ and returns MustAlias, MayAlias, or NoAlias as appropriate.
 </div>
 
 <div class="doc_text">
-<p>The NoAlias response is used when the two pointers refer to distinct objects,
-regardless of whether the pointers compare equal.  For example, freed pointers
-don't alias any pointers that were allocated afterwards.  As a degenerate case,
-pointers returned by malloc(0) have no bytes for an object, and are considered
-NoAlias even when malloc returns the same pointer.  The same rule applies to
-NULL pointers.</p>
+<p>The NoAlias response may be used when there is never an immediate dependence
+between any memory reference <i>based</i> on one pointer and any memory
+reference <i>based</i> the other. The most obvious example is when the two
+pointers point to non-overlapping memory ranges. Another is when the two
+pointers are only ever used for reading memory. Another is when the memory is
+freed and reallocated between accesses through one pointer and accesses through
+the other -- in this case, there is a dependence, but it's mediated by the free
+and reallocation.</p>
+
+<p>As an exception to this is with the
+<a href="LangRef.html#noalias"><tt>noalias</tt></a> keyword; the "irrelevant"
+dependencies are ignored.</p>
 
 <p>The MayAlias response is used whenever the two pointers might refer to the
 same object.  If the two memory objects overlap, but do not start at the same
@@ -222,15 +238,10 @@ a location, ModRef is returned.</p>
 
 <p>The <tt>AliasAnalysis</tt> class also provides a <tt>getModRefInfo</tt>
 method for testing dependencies between function calls.  This method takes two
-call sites (CS1 &amp; CS2), returns NoModRef if the two calls refer to disjoint
-memory locations, Ref if CS1 reads memory written by CS2, Mod if CS1 writes to
-memory read or written by CS2, or ModRef if CS1 might read or write memory
-accessed by CS2.  Note that this relation is not commutative.  Clients that use
-this method should be predicated on the <tt>hasNoModRefInfoForCalls()</tt>
-method, which indicates whether or not an analysis can provide mod/ref
-information for function call pairs (most can not).  If this predicate is false,
-the client shouldn't waste analysis time querying the <tt>getModRefInfo</tt>
-method many times.</p>
+call sites (CS1 &amp; CS2), returns NoModRef if neither call writes to memory
+read or written by the other, Ref if CS1 reads memory written by CS2, Mod if CS1
+writes to memory read or written by CS2, or ModRef if CS1 might read or write
+memory written to by CS2.  Note that this relation is not commutative.</p>
 
 </div>
 
@@ -246,21 +257,6 @@ method many times.</p>
 Several other tidbits of information are often collected by various alias
 analysis implementations and can be put to good use by various clients.
 </p>
-
-</div>
-
-<!-- _______________________________________________________________________ -->
-<div class="doc_subsubsection">
-  The <tt>getMustAliases</tt> method
-</div>
-
-<div class="doc_text">
-
-<p>The <tt>getMustAliases</tt> method returns all values that are known to
-always must alias a pointer.  This information can be provided in some cases for
-important objects like the null pointer and global values.  Knowing that a
-pointer always points to a particular function allows indirect calls to be
-turned into direct calls, for example.</p>
 
 </div>
 
@@ -423,7 +419,7 @@ implementing, you just override the interfaces you can improve.</p>
 href="#basic-aa">basicaa</a></tt> and <a href="#no-aa"><tt>no-aa</tt></a>
 passes) every alias analysis pass chains to another alias analysis
 implementation (for example, the user can specify "<tt>-basicaa -ds-aa
--anders-aa -licm</tt>" to get the maximum benefit from the three alias
+-licm</tt>" to get the maximum benefit from both alias
 analyses).  The alias analysis class automatically takes care of most of this
 for methods that you don't override.  For methods that you do override, in code
 paths that return a conservative MayAlias or Mod/Ref result, simply return
@@ -519,6 +515,45 @@ serviced quickly.  The actual calculation of the alias analysis results (the
 "run" method) is only performed once, but many (perhaps duplicate) queries may
 be performed.  Because of this, try to move as much computation to the run
 method as possible (within reason).</p>
+
+</div>
+
+<!-- ======================================================================= -->
+<div class="doc_subsection">
+  <a name="passmanager">Pass Manager Issues</a>
+</div>
+
+<div class="doc_text">
+
+<p>PassManager support for alternative AliasAnalysis implementation
+has some issues.</p>
+
+<p>There is no way to override the default alias analysis. It would
+be very useful to be able to do something like "opt -my-aa -O2" and
+have it use -my-aa for all passes which need AliasAnalysis, but there
+is currently no support for that, short of changing the source code
+and recompiling. Similarly, there is also no way of setting a chain
+of analyses as the default.</p>
+
+<p>There is no way for transform passes to declare that they preserve
+<tt>AliasAnalysis</tt> implementations. The <tt>AliasAnalysis</tt>
+interface includes <tt>deleteValue</tt> and <tt>copyValue</tt> methods
+which are intended to allow a pass to keep an AliasAnalysis consistent,
+however there's no way for a pass to declare in its
+<tt>getAnalysisUsage</tt> that it does so. Some passes attempt to use
+<tt>AU.addPreserved&lt;AliasAnalysis&gt;</tt>, however this doesn't
+actually have any effect.</tt>
+
+<p><tt>AliasAnalysisCounter</tt> (<tt>-count-aa</tt>) and <tt>AliasDebugger</tt>
+(<tt>-debug-aa</tt>) are implemented as <tt>ModulePass</tt> classes, so if your
+alias analysis uses <tt>FunctionPass</tt>, it won't be able to use
+these utilities. If you try to use them, the pass manager will
+silently route alias analysis queries directly to
+<tt>BasicAliasAnalysis</tt> instead.</p>
+
+<p>Similarly, the <tt>opt -p</tt> option introduces <tt>ModulePass</tt>
+passes between each pass, which prevents the use of <tt>FunctionPass</tt>
+alias analysis passes.</p>
 
 </div>
 
@@ -725,25 +760,6 @@ non-address taken globals), but is very quick analysis.</p>
 
 <!-- _______________________________________________________________________ -->
 <div class="doc_subsubsection">
-  <a name="anders-aa">The <tt>-anders-aa</tt> pass</a>
-</div>
-
-<div class="doc_text">
-
-<p>The <tt>-anders-aa</tt> pass implements the well-known "Andersen's algorithm"
-for interprocedural alias analysis.  This algorithm is a subset-based,
-flow-insensitive, context-insensitive, and field-insensitive alias analysis that
-is widely believed to be fairly precise.  Unfortunately, this algorithm is also
-O(N<sup>3</sup>).  The LLVM implementation currently does not implement any of
-the refinements (such as "online cycle elimination" or "offline variable
-substitution") to improve its efficiency, so it can be quite slow in common
-cases.
-</p>
-
-</div>
-
-<!-- _______________________________________________________________________ -->
-<div class="doc_subsubsection">
   <a name="steens-aa">The <tt>-steens-aa</tt> pass</a>
 </div>
 
@@ -788,6 +804,19 @@ module, it is not part of the LLVM core.</p>
 
 </div>
 
+<!-- _______________________________________________________________________ -->
+<div class="doc_subsubsection">
+  <a name="scev-aa">The <tt>-scev-aa</tt> pass</a>
+</div>
+
+<div class="doc_text">
+
+<p>The <tt>-scev-aa</tt> pass implements AliasAnalysis queries by
+translating them into ScalarEvolution queries. This gives it a
+more complete understanding of <tt>getelementptr</tt> instructions
+and loop induction variables than other alias analyses have.</p>
+
+</div>
 
 <!-- ======================================================================= -->
 <div class="doc_subsection">
@@ -875,7 +904,7 @@ pointer.</p>
 <div class="doc_text">
 
 <p>These passes are useful for evaluating the various alias analysis
-implementations.  You can use them with commands like '<tt>opt -anders-aa -ds-aa
+implementations.  You can use them with commands like '<tt>opt -ds-aa
 -aa-eval foo.bc -disable-output -stats</tt>'.</p>
 
 </div>
@@ -969,7 +998,7 @@ analysis directly.</p>
 
   <a href="mailto:sabre@nondot.org">Chris Lattner</a><br>
   <a href="http://llvm.org">LLVM Compiler Infrastructure</a><br>
-  Last modified: $Date: 2009-04-25 14:11:37 -0700 (Sat, 25 Apr 2009) $
+  Last modified: $Date: 2010-08-30 18:47:24 -0500 (Mon, 30 Aug 2010) $
 </address>
 
 </body>

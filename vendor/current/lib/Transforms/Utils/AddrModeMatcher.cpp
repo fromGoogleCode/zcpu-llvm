@@ -17,6 +17,7 @@
 #include "llvm/Instruction.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/Target/TargetData.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/PatternMatch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -54,8 +55,8 @@ void ExtAddrMode::print(raw_ostream &OS) const {
 }
 
 void ExtAddrMode::dump() const {
-  print(errs());
-  cerr << '\n';
+  print(dbgs());
+  dbgs() << '\n';
 }
 
 
@@ -124,7 +125,7 @@ static bool MightBeFoldableInst(Instruction *I) {
     // Don't touch identity bitcasts.
     if (I->getType() == I->getOperand(0)->getType())
       return false;
-    return isa<PointerType>(I->getType()) || isa<IntegerType>(I->getType());
+    return I->getType()->isPointerTy() || I->getType()->isIntegerTy();
   case Instruction::PtrToInt:
     // PtrToInt is always a noop, as we know that the int type is pointer sized.
     return true;
@@ -166,8 +167,8 @@ bool AddressingModeMatcher::MatchOperationAddr(User *AddrInst, unsigned Opcode,
   case Instruction::BitCast:
     // BitCast is always a noop, and we can handle it as long as it is
     // int->int or pointer->pointer (we don't want int<->fp or something).
-    if ((isa<PointerType>(AddrInst->getOperand(0)->getType()) ||
-         isa<IntegerType>(AddrInst->getOperand(0)->getType())) &&
+    if ((AddrInst->getOperand(0)->getType()->isPointerTy() ||
+         AddrInst->getOperand(0)->getType()->isIntegerTy()) &&
         // Don't touch identity bitcasts.  These were probably put here by LSR,
         // and we don't want to mess around with them.  Assume it knows what it
         // is doing.
@@ -380,29 +381,28 @@ static bool IsOperandAMemoryOperand(CallInst *CI, InlineAsm *IA, Value *OpVal,
                                     const TargetLowering &TLI) {
   std::vector<InlineAsm::ConstraintInfo>
   Constraints = IA->ParseConstraints();
-  
-  unsigned ArgNo = 1;   // ArgNo - The operand of the CallInst.
+
+  unsigned ArgNo = 0;   // The argument of the CallInst.
   for (unsigned i = 0, e = Constraints.size(); i != e; ++i) {
     TargetLowering::AsmOperandInfo OpInfo(Constraints[i]);
-    
+
     // Compute the value type for each operand.
     switch (OpInfo.Type) {
       case InlineAsm::isOutput:
         if (OpInfo.isIndirect)
-          OpInfo.CallOperandVal = CI->getOperand(ArgNo++);
+          OpInfo.CallOperandVal = CI->getArgOperand(ArgNo++);
         break;
       case InlineAsm::isInput:
-        OpInfo.CallOperandVal = CI->getOperand(ArgNo++);
+        OpInfo.CallOperandVal = CI->getArgOperand(ArgNo++);
         break;
       case InlineAsm::isClobber:
         // Nothing to do.
         break;
     }
-    
+
     // Compute the constraint code and ConstraintType to use.
-    TLI.ComputeConstraintToUse(OpInfo, SDValue(),
-                             OpInfo.ConstraintType == TargetLowering::C_Memory);
-    
+    TLI.ComputeConstraintToUse(OpInfo, SDValue());
+
     // If this asm operand is our Value*, and if it isn't an indirect memory
     // operand, we can't fold it!
     if (OpInfo.CallOperandVal == OpVal &&
@@ -410,7 +410,7 @@ static bool IsOperandAMemoryOperand(CallInst *CI, InlineAsm *IA, Value *OpVal,
          !OpInfo.isIndirect))
       return false;
   }
-  
+
   return true;
 }
 
@@ -433,20 +433,23 @@ static bool FindAllMemoryUses(Instruction *I,
   // Loop over all the uses, recursively processing them.
   for (Value::use_iterator UI = I->use_begin(), E = I->use_end();
        UI != E; ++UI) {
-    if (LoadInst *LI = dyn_cast<LoadInst>(*UI)) {
+    User *U = *UI;
+
+    if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
       MemoryUses.push_back(std::make_pair(LI, UI.getOperandNo()));
       continue;
     }
     
-    if (StoreInst *SI = dyn_cast<StoreInst>(*UI)) {
-      if (UI.getOperandNo() == 0) return true; // Storing addr, not into addr.
-      MemoryUses.push_back(std::make_pair(SI, UI.getOperandNo()));
+    if (StoreInst *SI = dyn_cast<StoreInst>(U)) {
+      unsigned opNo = UI.getOperandNo();
+      if (opNo == 0) return true; // Storing addr, not into addr.
+      MemoryUses.push_back(std::make_pair(SI, opNo));
       continue;
     }
     
-    if (CallInst *CI = dyn_cast<CallInst>(*UI)) {
+    if (CallInst *CI = dyn_cast<CallInst>(U)) {
       InlineAsm *IA = dyn_cast<InlineAsm>(CI->getCalledValue());
-      if (IA == 0) return true;
+      if (!IA) return true;
       
       // If this is a memory operand, we're cool, otherwise bail out.
       if (!IsOperandAMemoryOperand(CI, IA, I, TLI))
@@ -454,7 +457,7 @@ static bool FindAllMemoryUses(Instruction *I,
       continue;
     }
     
-    if (FindAllMemoryUses(cast<Instruction>(*UI), MemoryUses, ConsideredInsts,
+    if (FindAllMemoryUses(cast<Instruction>(U), MemoryUses, ConsideredInsts,
                           TLI))
       return true;
   }
@@ -568,7 +571,7 @@ IsProfitableToFoldIntoAddressingMode(Instruction *I, ExtAddrMode &AMBefore,
     // Get the access type of this use.  If the use isn't a pointer, we don't
     // know what it accesses.
     Value *Address = User->getOperand(OpNo);
-    if (!isa<PointerType>(Address->getType()))
+    if (!Address->getType()->isPointerTy())
       return false;
     const Type *AddressAccessTy =
       cast<PointerType>(Address->getType())->getElementType();

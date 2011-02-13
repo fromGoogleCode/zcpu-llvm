@@ -19,6 +19,7 @@
 #include "llvm/Pass.h"
 #include "llvm/PassManagers.h"
 #include "llvm/Function.h"
+#include <deque>
 
 namespace llvm {
 
@@ -28,8 +29,11 @@ class PMStack;
 
 class LoopPass : public Pass {
 public:
-  explicit LoopPass(intptr_t pid) : Pass(pid) {}
-  explicit LoopPass(void *pid) : Pass(pid) {}
+  explicit LoopPass(char &pid) : Pass(PT_Loop, pid) {}
+
+  /// getPrinterPass - Get a pass to print the function corresponding
+  /// to a Loop.
+  Pass *createPrinterPass(raw_ostream &O, const std::string &Banner) const;
 
   // runOnLoop - This method should be implemented by the subclass to perform
   // whatever action is necessary for the specified Loop.
@@ -52,9 +56,9 @@ public:
   // LPPassManger as expected.
   void preparePassManager(PMStack &PMS);
 
-  /// Assign pass manager to manager this pass
+  /// Assign pass manager to manage this pass
   virtual void assignPassManager(PMStack &PMS,
-                                 PassManagerType PMT = PMT_LoopPassManager);
+                                 PassManagerType PMT);
 
   ///  Return what kind of Pass Manager can manage this pass.
   virtual PassManagerType getPotentialPassManagerType() const {
@@ -73,7 +77,7 @@ public:
   /// cloneBasicBlockAnalysis - Clone analysis info associated with basic block.
   virtual void cloneBasicBlockAnalysis(BasicBlock *F, BasicBlock *T, Loop *L) {}
 
-  /// deletekAnalysisValue - Delete analysis info associated with value V.
+  /// deleteAnalysisValue - Delete analysis info associated with value V.
   virtual void deleteAnalysisValue(Value *V, Loop *L) {}
 };
 
@@ -94,13 +98,16 @@ public:
     return "Loop Pass Manager";
   }
 
+  virtual PMDataManager *getAsPMDataManager() { return this; }
+  virtual Pass *getAsPass() { return this; }
+
   /// Print passes managed by this manager
   void dumpPassStructure(unsigned Offset);
 
-  Pass *getContainedPass(unsigned N) {
+  LoopPass *getContainedPass(unsigned N) {
     assert(N < PassVector.size() && "Pass number out of range!");
-    Pass *FP = static_cast<Pass *>(PassVector[N]);
-    return FP;
+    LoopPass *LP = static_cast<LoopPass *>(PassVector[N]);
+    return LP;
   }
 
   virtual PassManagerType getPassManagerType() const {
@@ -111,8 +118,12 @@ public:
   // Delete loop from the loop queue and loop nest (LoopInfo).
   void deleteLoopFromQueue(Loop *L);
 
-  // Insert loop into the loop nest(LoopInfo) and loop queue(LQ).
+  // Insert loop into the loop queue and add it as a child of the
+  // given parent.
   void insertLoop(Loop *L, Loop *ParentLoop);
+
+  // Insert a loop into the loop queue.
+  void insertLoopIntoQueue(Loop *L);
 
   // Reoptimize this loop. LPPassManager will re-insert this loop into the
   // queue. This allows LoopPass to change loop nest for the loop. This

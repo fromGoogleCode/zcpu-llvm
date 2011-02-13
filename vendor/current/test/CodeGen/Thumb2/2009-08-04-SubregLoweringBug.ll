@@ -1,5 +1,5 @@
-; RUN: llvm-as < %s | llc -mtriple=thumbv7-apple-darwin9 -mattr=+neon,+neonfp 
-; RUN: llvm-as < %s | llc -mtriple=thumbv7-apple-darwin9 -mattr=+neon,+neonfp | grep fcpys | count 1
+; RUN: llc < %s -mtriple=thumbv7-apple-darwin9 -mcpu=cortex-a8
+; RUN: llc < %s -mtriple=thumbv7-apple-darwin9 -mcpu=cortex-a8 | not grep fcpys
 ; rdar://7117307
 
 	%struct.Hosp = type { i32, i32, i32, %struct.List, %struct.List, %struct.List, %struct.List }
@@ -8,7 +8,7 @@
 	%struct.Results = type { float, float, float }
 	%struct.Village = type { [4 x %struct.Village*], %struct.Village*, %struct.List, %struct.Hosp, i32, i32 }
 
-define arm_apcscc void @get_results(%struct.Results* noalias nocapture sret %agg.result, %struct.Village* %village) nounwind {
+define void @get_results(%struct.Results* noalias nocapture sret %agg.result, %struct.Village* %village) nounwind {
 entry:
 	br i1 undef, label %bb, label %bb6.preheader
 

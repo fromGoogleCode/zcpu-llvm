@@ -19,12 +19,10 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Constants.h"
 #include "llvm/Instructions.h"
-#include "llvm/LLVMContext.h"
 #include "llvm/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/CallSite.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SmallVector.h"
 using namespace llvm;
@@ -35,9 +33,9 @@ STATISTIC(NumReturnValProped, "Number of return values turned into constants");
 namespace {
   /// IPCP - The interprocedural constant propagation pass
   ///
-  struct VISIBILITY_HIDDEN IPCP : public ModulePass {
+  struct IPCP : public ModulePass {
     static char ID; // Pass identification, replacement for typeid
-    IPCP() : ModulePass(&ID) {}
+    IPCP() : ModulePass(ID) {}
 
     bool runOnModule(Module &M);
   private:
@@ -47,8 +45,8 @@ namespace {
 }
 
 char IPCP::ID = 0;
-static RegisterPass<IPCP>
-X("ipconstprop", "Interprocedural constant propagation");
+INITIALIZE_PASS(IPCP, "ipconstprop",
+                "Interprocedural constant propagation", false, false);
 
 ModulePass *llvm::createIPConstantPropagationPass() { return new IPCP(); }
 
@@ -87,12 +85,16 @@ bool IPCP::PropagateConstantsIntoArguments(Function &F) {
 
   unsigned NumNonconstant = 0;
   for (Value::use_iterator UI = F.use_begin(), E = F.use_end(); UI != E; ++UI) {
+    User *U = *UI;
+    // Ignore blockaddress uses.
+    if (isa<BlockAddress>(U)) continue;
+    
     // Used by a non-instruction, or not the callee of a function, do not
     // transform.
-    if (!isa<CallInst>(*UI) && !isa<InvokeInst>(*UI))
+    if (!isa<CallInst>(U) && !isa<InvokeInst>(U))
       return false;
     
-    CallSite CS = CallSite::get(cast<Instruction>(*UI));
+    CallSite CS(cast<Instruction>(U));
     if (!CS.isCallee(UI))
       return false;
 
@@ -130,8 +132,8 @@ bool IPCP::PropagateConstantsIntoArguments(Function &F) {
   Function::arg_iterator AI = F.arg_begin();
   for (unsigned i = 0, e = ArgumentConstants.size(); i != e; ++i, ++AI) {
     // Do we have a constant argument?
-    if (ArgumentConstants[i].second || AI->use_empty() || 
-        (AI->hasByValAttr() && isa<PointerType>(AI->getType())))
+    if (ArgumentConstants[i].second || AI->use_empty() ||
+        (AI->hasByValAttr() && !F.onlyReadsMemory()))
       continue;
   
     Value *V = ArgumentConstants[i].first;
@@ -153,7 +155,7 @@ bool IPCP::PropagateConstantsIntoArguments(Function &F) {
 // callers will be updated to use the value they pass in directly instead of
 // using the return value.
 bool IPCP::PropagateConstantReturn(Function &F) {
-  if (F.getReturnType() == Type::getVoidTy(F.getContext()))
+  if (F.getReturnType()->isVoidTy())
     return false; // No return value.
 
   // If this function could be overridden later in the link stage, we can't
@@ -161,8 +163,6 @@ bool IPCP::PropagateConstantReturn(Function &F) {
   if (F.mayBeOverridden())
     return false;
     
-  LLVMContext &Context = F.getContext();
-  
   // Check to see if this function returns a constant.
   SmallVector<Value *,4> RetVals;
   const StructType *STy = dyn_cast<StructType>(F.getReturnType());
@@ -186,7 +186,7 @@ bool IPCP::PropagateConstantReturn(Function &F) {
         if (!STy)
           V = RI->getOperand(i);
         else
-          V = FindInsertedValue(RI->getOperand(0), i, Context);
+          V = FindInsertedValue(RI->getOperand(0), i);
 
         if (V) {
           // Ignore undefs, we can change them into anything
@@ -219,7 +219,7 @@ bool IPCP::PropagateConstantReturn(Function &F) {
   // constant.
   bool MadeChange = false;
   for (Value::use_iterator UI = F.use_begin(), E = F.use_end(); UI != E; ++UI) {
-    CallSite CS = CallSite::get(*UI);
+    CallSite CS(*UI);
     Instruction* Call = CS.getInstruction();
 
     // Not a call instruction or a call instruction that's not calling F

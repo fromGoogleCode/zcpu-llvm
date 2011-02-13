@@ -1,4 +1,4 @@
-//===- ARMBaseInstrInfo.h - ARM Base Instruction Information -------------*- C++ -*-===//
+//===- ARMBaseInstrInfo.h - ARM Base Instruction Information ----*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,11 +15,12 @@
 #define ARMBASEINSTRUCTIONINFO_H
 
 #include "ARM.h"
-#include "ARMRegisterInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/Target/TargetInstrInfo.h"
 
 namespace llvm {
+  class ARMSubtarget;
+  class ARMBaseRegisterInfo;
 
 /// ARMII - This namespace holds all of the target specific flags that
 /// instruction info tracks.
@@ -58,12 +59,13 @@ namespace ARMII {
     Size4Bytes    = 3,
     Size2Bytes    = 4,
 
-    // IndexMode - Unindex, pre-indexed, or post-indexed. Only valid for load
-    // and store ops
+    // IndexMode - Unindex, pre-indexed, or post-indexed are valid for load
+    // and store ops only.  Generic "updating" flag is used for ld/st multiple.
     IndexModeShift = 7,
     IndexModeMask  = 3 << IndexModeShift,
     IndexModePre   = 1,
     IndexModePost  = 2,
+    IndexModeUpd   = 3,
 
     //===------------------------------------------------------------------===//
     // Instruction encoding formats.
@@ -92,32 +94,49 @@ namespace ARMII {
     StMiscFrm     = 9  << FormShift,
     LdStMulFrm    = 10 << FormShift,
 
+    LdStExFrm     = 11 << FormShift,
+
     // Miscellaneous arithmetic instructions
-    ArithMiscFrm  = 11 << FormShift,
+    ArithMiscFrm  = 12 << FormShift,
+    SatFrm        = 13 << FormShift,
 
     // Extend instructions
-    ExtFrm        = 12 << FormShift,
+    ExtFrm        = 14 << FormShift,
 
     // VFP formats
-    VFPUnaryFrm   = 13 << FormShift,
-    VFPBinaryFrm  = 14 << FormShift,
-    VFPConv1Frm   = 15 << FormShift,
-    VFPConv2Frm   = 16 << FormShift,
-    VFPConv3Frm   = 17 << FormShift,
-    VFPConv4Frm   = 18 << FormShift,
-    VFPConv5Frm   = 19 << FormShift,
-    VFPLdStFrm    = 20 << FormShift,
-    VFPLdStMulFrm = 21 << FormShift,
-    VFPMiscFrm    = 22 << FormShift,
+    VFPUnaryFrm   = 15 << FormShift,
+    VFPBinaryFrm  = 16 << FormShift,
+    VFPConv1Frm   = 17 << FormShift,
+    VFPConv2Frm   = 18 << FormShift,
+    VFPConv3Frm   = 19 << FormShift,
+    VFPConv4Frm   = 20 << FormShift,
+    VFPConv5Frm   = 21 << FormShift,
+    VFPLdStFrm    = 22 << FormShift,
+    VFPLdStMulFrm = 23 << FormShift,
+    VFPMiscFrm    = 24 << FormShift,
 
     // Thumb format
-    ThumbFrm      = 23 << FormShift,
+    ThumbFrm      = 25 << FormShift,
 
-    // NEON format
-    NEONFrm       = 24 << FormShift,
-    NEONGetLnFrm  = 25 << FormShift,
-    NEONSetLnFrm  = 26 << FormShift,
-    NEONDupFrm    = 27 << FormShift,
+    // Miscelleaneous format
+    MiscFrm       = 26 << FormShift,
+
+    // NEON formats
+    NGetLnFrm     = 27 << FormShift,
+    NSetLnFrm     = 28 << FormShift,
+    NDupFrm       = 29 << FormShift,
+    NLdStFrm      = 30 << FormShift,
+    N1RegModImmFrm= 31 << FormShift,
+    N2RegFrm      = 32 << FormShift,
+    NVCVTFrm      = 33 << FormShift,
+    NVDupLnFrm    = 34 << FormShift,
+    N2RegVShLFrm  = 35 << FormShift,
+    N2RegVShRFrm  = 36 << FormShift,
+    N3RegFrm      = 37 << FormShift,
+    N3RegVShFrm   = 38 << FormShift,
+    NVExtFrm      = 39 << FormShift,
+    NVMulSLFrm    = 40 << FormShift,
+    NVTBLFrm      = 41 << FormShift,
 
     //===------------------------------------------------------------------===//
     // Misc flags.
@@ -129,6 +148,14 @@ namespace ARMII {
     // Xform16Bit - Indicates this Thumb2 instruction may be transformed into
     // a 16-bit Thumb instruction if certain conditions are met.
     Xform16Bit    = 1 << 16,
+
+    //===------------------------------------------------------------------===//
+    // Code domain.
+    DomainShift   = 17,
+    DomainMask    = 3 << DomainShift,
+    DomainGeneral = 0 << DomainShift,
+    DomainVFP     = 1 << DomainShift,
+    DomainNEON    = 2 << DomainShift,
 
     //===------------------------------------------------------------------===//
     // Field shifts - such shifts are used to set field while generating
@@ -154,35 +181,56 @@ namespace ARMII {
     I_BitShift     = 25,
     CondShift      = 28
   };
+
+  /// Target Operand Flag enum.
+  enum TOF {
+    //===------------------------------------------------------------------===//
+    // ARM Specific MachineOperand flags.
+
+    MO_NO_FLAG,
+
+    /// MO_LO16 - On a symbol operand, this represents a relocation containing
+    /// lower 16 bit of the address. Used only via movw instruction.
+    MO_LO16,
+
+    /// MO_HI16 - On a symbol operand, this represents a relocation containing
+    /// higher 16 bit of the address. Used only via movt instruction.
+    MO_HI16
+  };
 }
 
 class ARMBaseInstrInfo : public TargetInstrInfoImpl {
+  const ARMSubtarget &Subtarget;
 protected:
   // Can be only subclassed.
-  explicit ARMBaseInstrInfo();
+  explicit ARMBaseInstrInfo(const ARMSubtarget &STI);
 public:
   // Return the non-pre/post incrementing version of 'Opc'. Return 0
   // if there is not such an opcode.
   virtual unsigned getUnindexedOpcode(unsigned Opc) const =0;
-
-  // Return true if the block does not fall through.
-  virtual bool BlockHasNoFallThrough(const MachineBasicBlock &MBB) const =0;
 
   virtual MachineInstr *convertToThreeAddress(MachineFunction::iterator &MFI,
                                               MachineBasicBlock::iterator &MBBI,
                                               LiveVariables *LV) const;
 
   virtual const ARMBaseRegisterInfo &getRegisterInfo() const =0;
+  const ARMSubtarget &getSubtarget() const { return Subtarget; }
+
+  bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator MI,
+                                 const std::vector<CalleeSavedInfo> &CSI,
+                                 const TargetRegisterInfo *TRI) const;
 
   // Branch analysis.
   virtual bool AnalyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
                              MachineBasicBlock *&FBB,
                              SmallVectorImpl<MachineOperand> &Cond,
-                             bool AllowModify) const;
+                             bool AllowModify = false) const;
   virtual unsigned RemoveBranch(MachineBasicBlock &MBB) const;
   virtual unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                                 MachineBasicBlock *FBB,
-                            const SmallVectorImpl<MachineOperand> &Cond) const;
+                                const SmallVectorImpl<MachineOperand> &Cond,
+                                DebugLoc DL) const;
 
   virtual
   bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const;
@@ -210,50 +258,96 @@ public:
   virtual bool DefinesPredicate(MachineInstr *MI,
                                 std::vector<MachineOperand> &Pred) const;
 
+  virtual bool isPredicable(MachineInstr *MI) const;
+
   /// GetInstSize - Returns the size of the specified MachineInstr.
   ///
   virtual unsigned GetInstSizeInBytes(const MachineInstr* MI) const;
-
-  /// Return true if the instruction is a register to register move and return
-  /// the source and dest operands and their sub-register indices by reference.
-  virtual bool isMoveInstr(const MachineInstr &MI,
-                           unsigned &SrcReg, unsigned &DstReg,
-                           unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
 
   virtual unsigned isLoadFromStackSlot(const MachineInstr *MI,
                                        int &FrameIndex) const;
   virtual unsigned isStoreToStackSlot(const MachineInstr *MI,
                                       int &FrameIndex) const;
 
-  virtual bool copyRegToReg(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator I,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC) const;
+  virtual void copyPhysReg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator I, DebugLoc DL,
+                           unsigned DestReg, unsigned SrcReg,
+                           bool KillSrc) const;
 
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MBBI,
                                    unsigned SrcReg, bool isKill, int FrameIndex,
-                                   const TargetRegisterClass *RC) const;
+                                   const TargetRegisterClass *RC,
+                                   const TargetRegisterInfo *TRI) const;
 
   virtual void loadRegFromStackSlot(MachineBasicBlock &MBB,
                                     MachineBasicBlock::iterator MBBI,
                                     unsigned DestReg, int FrameIndex,
-                                    const TargetRegisterClass *RC) const;
+                                    const TargetRegisterClass *RC,
+                                    const TargetRegisterInfo *TRI) const;
 
-  virtual bool canFoldMemoryOperand(const MachineInstr *MI,
-                                    const SmallVectorImpl<unsigned> &Ops) const;
+  virtual MachineInstr *emitFrameIndexDebugValue(MachineFunction &MF,
+                                                 int FrameIx,
+                                                 uint64_t Offset,
+                                                 const MDNode *MDPtr,
+                                                 DebugLoc DL) const;
 
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                              const SmallVectorImpl<unsigned> &Ops,
-                                              int FrameIndex) const;
+  virtual void reMaterialize(MachineBasicBlock &MBB,
+                             MachineBasicBlock::iterator MI,
+                             unsigned DestReg, unsigned SubIdx,
+                             const MachineInstr *Orig,
+                             const TargetRegisterInfo &TRI) const;
 
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                              const SmallVectorImpl<unsigned> &Ops,
-                                              MachineInstr* LoadMI) const;
+  MachineInstr *duplicate(MachineInstr *Orig, MachineFunction &MF) const;
 
+  virtual bool produceSameValue(const MachineInstr *MI0,
+                                const MachineInstr *MI1) const;
+
+  /// areLoadsFromSameBasePtr - This is used by the pre-regalloc scheduler to
+  /// determine if two loads are loading from the same base address. It should
+  /// only return true if the base pointers are the same and the only
+  /// differences between the two addresses is the offset. It also returns the
+  /// offsets by reference.
+  virtual bool areLoadsFromSameBasePtr(SDNode *Load1, SDNode *Load2,
+                                       int64_t &Offset1, int64_t &Offset2)const;
+
+  /// shouldScheduleLoadsNear - This is a used by the pre-regalloc scheduler to
+  /// determine (in conjuction with areLoadsFromSameBasePtr) if two loads should
+  /// be scheduled togther. On some targets if two loads are loading from
+  /// addresses in the same cache line, it's better if they are scheduled
+  /// together. This function takes two integers that represent the load offsets
+  /// from the common base address. It returns true if it decides it's desirable
+  /// to schedule the two loads together. "NumLoads" is the number of loads that
+  /// have already been scheduled after Load1.
+  virtual bool shouldScheduleLoadsNear(SDNode *Load1, SDNode *Load2,
+                                       int64_t Offset1, int64_t Offset2,
+                                       unsigned NumLoads) const;
+
+  virtual bool isSchedulingBoundary(const MachineInstr *MI,
+                                    const MachineBasicBlock *MBB,
+                                    const MachineFunction &MF) const;
+
+  virtual bool isProfitableToIfCvt(MachineBasicBlock &MBB,
+                                   unsigned NumInstrs) const;
+
+  virtual bool isProfitableToIfCvt(MachineBasicBlock &TMBB,unsigned NumT,
+                                   MachineBasicBlock &FMBB,unsigned NumF) const;
+
+  virtual bool isProfitableToDupForIfCvt(MachineBasicBlock &MBB,
+                                         unsigned NumInstrs) const {
+    return NumInstrs && NumInstrs == 1;
+  }
+
+  /// AnalyzeCompare - For a comparison instruction, return the source register
+  /// in SrcReg and the value it compares against in CmpValue. Return true if
+  /// the comparison instruction can be analyzed.
+  virtual bool AnalyzeCompare(const MachineInstr *MI, unsigned &SrcReg,
+                              int &CmpValue) const;
+
+  /// ConvertToSetZeroFlag - Convert the instruction to set the zero flag so
+  /// that we can remove a "comparison with zero".
+  virtual bool ConvertToSetZeroFlag(MachineInstr *Instr,
+                                    MachineInstr *CmpInstr) const;
 };
 
 static inline
@@ -293,10 +387,15 @@ bool isJumpTableBranchOpcode(int Opc) {
     Opc == ARM::tBR_JTr || Opc == ARM::t2BR_JT;
 }
 
+static inline
+bool isIndirectBranchOpcode(int Opc) {
+  return Opc == ARM::BRIND || Opc == ARM::MOVPCRX || Opc == ARM::tBRIND;
+}
+
 /// getInstrPredicate - If instruction is predicated, returns its predicate
 /// condition, otherwise returns AL. It also returns the condition code
 /// register by reference.
-ARMCC::CondCodes getInstrPredicate(MachineInstr *MI, unsigned &PredReg);
+ARMCC::CondCodes getInstrPredicate(const MachineInstr *MI, unsigned &PredReg);
 
 int getMatchingCondBranchOpcode(int Opc);
 
@@ -317,15 +416,16 @@ void emitT2RegPlusImmediate(MachineBasicBlock &MBB,
 
 
 /// rewriteARMFrameIndex / rewriteT2FrameIndex -
-/// Rewrite MI to access 'Offset' bytes from the FP. Return the offset that
-/// could not be handled directly in MI.
-int rewriteARMFrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
-                               unsigned FrameReg, int Offset,
-                               const ARMBaseInstrInfo &TII);
+/// Rewrite MI to access 'Offset' bytes from the FP. Return false if the
+/// offset could not be handled directly in MI, and return the left-over
+/// portion by reference.
+bool rewriteARMFrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
+                          unsigned FrameReg, int &Offset,
+                          const ARMBaseInstrInfo &TII);
 
-int rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
-                        unsigned FrameReg, int Offset,
-                        const ARMBaseInstrInfo &TII);
+bool rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
+                         unsigned FrameReg, int &Offset,
+                         const ARMBaseInstrInfo &TII);
 
 } // End llvm namespace
 

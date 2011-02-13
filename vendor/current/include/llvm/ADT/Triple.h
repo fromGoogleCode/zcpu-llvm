@@ -13,13 +13,18 @@
 #include "llvm/ADT/StringRef.h"
 #include <string>
 
+// Some system headers or GCC predefined macros conflict with identifiers in
+// this file.  Undefine them here.
+#undef mips
+#undef sparc
+
 namespace llvm {
 class StringRef;
 class Twine;
 
 /// Triple - Helper class for working with target triples.
 ///
-/// Target triples are strings in the format of:
+/// Target triples are strings in the canonical form:
 ///   ARCHITECTURE-VENDOR-OPERATING_SYSTEM
 /// or
 ///   ARCHITECTURE-VENDOR-OPERATING_SYSTEM-ENVIRONMENT
@@ -30,20 +35,11 @@ class Twine;
 /// from the components of the target triple to well known IDs.
 ///
 /// At its core the Triple class is designed to be a wrapper for a triple
-/// string; it does not normally change or normalize the triple string, instead
-/// it provides additional APIs to parse normalized parts out of the triple.
+/// string; the constructor does not change or normalize the triple string.
+/// Clients that need to handle the non-canonical triples that users often
+/// specify should use the normalize method.
 ///
-/// One curiosity this implies is that for some odd triples the results of,
-/// e.g., getOSName() can be very different from the result of getOS().  For
-/// example, for 'i386-mingw32', getOS() will return MinGW32, but since
-/// getOSName() is purely based on the string structure that will return the
-/// empty string.
-///
-/// Clients should generally avoid using getOSName() and related APIs unless
-/// they are familiar with the triple format (this is particularly true when
-/// rewriting a triple).
-///
-/// See autoconf/config.guess for a glimpse into what they look like in
+/// See autoconf/config.guess for a glimpse into what triples look like in
 /// practice.
 class Triple {
 public:
@@ -59,14 +55,16 @@ public:
     msp430,  // MSP430: msp430
     pic16,   // PIC16: pic16
     ppc,     // PPC: powerpc
-    ppc64,   // PPC64: powerpc64
+    ppc64,   // PPC64: powerpc64, ppu
     sparc,   // Sparc: sparc
+    sparcv9, // Sparcv9: Sparcv9
     systemz, // SystemZ: s390x
     tce,     // TCE (http://tce.cs.tut.fi/): tce
     thumb,   // Thumb: thumb, thumbv.*
     x86,     // X86: i[3-9]86
     x86_64,  // X86-64: amd64, x86_64
     xcore,   // XCore: xcore
+    mblaze,  // MBlaze: mblaze
 
     InvalidArch
   };
@@ -85,12 +83,16 @@ public:
     DragonFly,
     FreeBSD,
     Linux,
+    Lv2,        // PS3
     MinGW32,
     MinGW64,
     NetBSD,
     OpenBSD,
+    Psp,
     Solaris,
-    Win32
+    Win32,
+    Haiku,
+    Minix
   };
   
 private:
@@ -106,6 +108,9 @@ private:
   mutable OSType OS;
 
   bool isInitialized() const { return Arch != InvalidArch; }
+  static ArchType ParseArch(StringRef ArchName);
+  static VendorType ParseVendor(StringRef VendorName);
+  static OSType ParseOS(StringRef OSName);
   void Parse() const;
 
 public:
@@ -113,14 +118,24 @@ public:
   /// @{
   
   Triple() : Data(), Arch(InvalidArch) {}
-  explicit Triple(const StringRef &Str) : Data(Str), Arch(InvalidArch) {}
-  explicit Triple(const char *ArchStr, const char *VendorStr, const char *OSStr)
+  explicit Triple(StringRef Str) : Data(Str), Arch(InvalidArch) {}
+  explicit Triple(StringRef ArchStr, StringRef VendorStr, StringRef OSStr)
     : Data(ArchStr), Arch(InvalidArch) {
     Data += '-';
     Data += VendorStr;
     Data += '-';
     Data += OSStr;
   }
+
+  /// @}
+  /// @name Normalization
+  /// @{
+
+  /// normalize - Turn an arbitrary machine specification into the canonical
+  /// triple form (or something sensible that the Triple class understands if
+  /// nothing better can reasonably be done).  In particular, it handles the
+  /// common case in which otherwise valid components are in the wrong order.
+  static std::string normalize(StringRef Str);
 
   /// @}
   /// @name Typed Component Access
@@ -153,6 +168,8 @@ public:
   /// @}
   /// @name Direct Component Access
   /// @{
+
+  const std::string &str() const { return Data; }
 
   const std::string &getTriple() const { return Data; }
 
@@ -212,23 +229,27 @@ public:
 
   /// setArchName - Set the architecture (first) component of the
   /// triple by name.
-  void setArchName(const StringRef &Str);
+  void setArchName(StringRef Str);
 
   /// setVendorName - Set the vendor (second) component of the triple
   /// by name.
-  void setVendorName(const StringRef &Str);
+  void setVendorName(StringRef Str);
 
   /// setOSName - Set the operating system (third) component of the
   /// triple by name.
-  void setOSName(const StringRef &Str);
+  void setOSName(StringRef Str);
 
   /// setEnvironmentName - Set the optional environment (fourth)
   /// component of the triple by name.
-  void setEnvironmentName(const StringRef &Str);
+  void setEnvironmentName(StringRef Str);
 
   /// setOSAndEnvironmentName - Set the operating system and optional
   /// environment components with a single string.
-  void setOSAndEnvironmentName(const StringRef &Str);
+  void setOSAndEnvironmentName(StringRef Str);
+
+  /// getArchNameForAssembler - Get an architecture name that is understood by
+  /// the target assembler.
+  const char *getArchNameForAssembler();
 
   /// @}
   /// @name Static helpers for IDs.
@@ -238,6 +259,14 @@ public:
   /// architecture.
   static const char *getArchTypeName(ArchType Kind);
 
+  /// getArchTypePrefix - Get the "prefix" canonical name for the \arg Kind
+  /// architecture. This is the prefix used by the architecture specific
+  /// builtins, and is suitable for passing to \see
+  /// Intrinsic::getIntrinsicForGCCBuiltin().
+  ///
+  /// \return - The architecture prefix, or 0 if none is defined.
+  static const char *getArchTypePrefix(ArchType Kind);
+
   /// getVendorTypeName - Get the canonical name for the \arg Kind
   /// vendor.
   static const char *getVendorTypeName(VendorType Kind);
@@ -245,9 +274,18 @@ public:
   /// getOSTypeName - Get the canonical name for the \arg Kind vendor.
   static const char *getOSTypeName(OSType Kind);
 
+  /// @}
+  /// @name Static helpers for converting alternate architecture names.
+  /// @{
+
   /// getArchTypeForLLVMName - The canonical type for the given LLVM
   /// architecture name (e.g., "x86").
-  static ArchType getArchTypeForLLVMName(const StringRef &Str);
+  static ArchType getArchTypeForLLVMName(StringRef Str);
+
+  /// getArchTypeForDarwinArchName - Get the architecture type for a "Darwin"
+  /// architecture name, for example as accepted by "gcc -arch" (see also
+  /// arch(3)).
+  static ArchType getArchTypeForDarwinArchName(StringRef Str);
 
   /// @}
 };

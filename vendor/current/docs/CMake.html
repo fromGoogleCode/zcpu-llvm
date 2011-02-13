@@ -209,7 +209,7 @@
   <dt><b>CMAKE_BUILD_TYPE</b>:STRING</dt>
 
   <dd>Sets the build type for <i>make</i> based generators. Possible
-    values are Release, Debug, RelWithDebInfo and MiniSizeRel. On
+    values are Release, Debug, RelWithDebInfo and MinSizeRel. On
     systems like Visual Studio the user sets the build type with the IDE
     settings.</dd>
 
@@ -251,16 +251,22 @@
     <i>-DLLVM_TARGETS_TO_BUILD="X86;PowerPC;Alpha"</i>.</dd>
 
   <dt><b>LLVM_BUILD_TOOLS</b>:BOOL</dt>
-  <dd>Build LLVM tools. Defaults to ON.</dd>
+  <dd>Build LLVM tools. Defaults to ON. Targets for building each tool
+    are generated in any case. You can build an tool separately by
+    invoking its target. For example, you can build <i>llvm-as</i>
+    with a makefile-based system executing <i>make llvm-as</i> on the
+    root of your build directory.</dd>
 
   <dt><b>LLVM_BUILD_EXAMPLES</b>:BOOL</dt>
-  <dd>Build LLVM examples. Defaults to ON.</dd>
+  <dd>Build LLVM examples. Defaults to OFF. Targets for building each
+    example are generated in any case. See documentation
+    for <i>LLVM_BUILD_TOOLS</i> above for more details.</dd>
 
   <dt><b>LLVM_ENABLE_THREADS</b>:BOOL</dt>
   <dd>Build with threads support, if available. Defaults to ON.</dd>
 
   <dt><b>LLVM_ENABLE_ASSERTIONS</b>:BOOL</dt>
-  <dd>Enables code assertions. Defaults to ON if and only if
+  <dd>Enables code assertions. Defaults to OFF if and only if
     CMAKE_BUILD_TYPE is <i>Release</i>.</dd>
 
   <dt><b>LLVM_ENABLE_PIC</b>:BOOL</dt>
@@ -268,10 +274,28 @@
     compiler supports this flag. Some systems, like Windows, do not
     need this flag. Defaults to ON.</dd>
 
+  <dt><b>LLVM_ENABLE_WARNINGS</b>:BOOL</dt>
+  <dd>Enable all compiler warnings. Defaults to ON.</dd>
+
+  <dt><b>LLVM_ENABLE_PEDANTIC</b>:BOOL</dt>
+  <dd>Enable pedantic mode. This disable compiler specific extensions, is
+    possible. Defaults to ON.</dd>
+
+  <dt><b>LLVM_ENABLE_WERROR</b>:BOOL</dt>
+  <dd>Stop and fail build, if a compiler warning is
+    triggered. Defaults to OFF.</dd>
+
   <dt><b>LLVM_BUILD_32_BITS</b>:BOOL</dt>
   <dd>Build 32-bits executables and libraries on 64-bits systems. This
-  option is available only on some 64-bits unix systems. Defaults to
-  OFF.</dd>
+    option is available only on some 64-bits unix systems. Defaults to
+    OFF.</dd>
+
+  <dt><b>LLVM_TARGET_ARCH</b>:STRING</dt>
+  <dd>LLVM target to use for native code generation. This is required
+    for JIT generation. It defaults to "host", meaning that it shall
+    pick the architecture of the machine where LLVM is being built. If
+    you are cross-compiling, set it to the target architecture
+    name.</dd>
 
   <dt><b>LLVM_TABLEGEN</b>:STRING</dt>
   <dd>Full path to a native TableGen executable (usually
@@ -289,9 +313,15 @@
 
 <div class="doc_text">
 
-<p>LLVM testing is not supported on Visual Studio.</p>
+<p>Testing is performed when the <i>check</i> target is built. For
+  instance, if you are using makefiles, execute this command while on
+  the top level of your build directory:</p>
 
-<p>TODO</p>
+<div class="doc_code">
+  <p><tt>make check</tt></p>
+</div>
+
+<p>Testing is not supported on Visual Studio.</p>
 
 </div>
 
@@ -311,6 +341,9 @@
     <a href="http://www.vtk.org/Wiki/CMake_Cross_Compiling#Information_how_to_set_up_various_cross_compiling_toolchains">this
     section</a> for a quick solution.</p>
 
+<p>Also see the <a href="#llvmvars">LLVM-specific variables</a>
+  section for variables used when cross-compiling.</p>
+
 </div>
 
 <!-- *********************************************************************** -->
@@ -321,7 +354,38 @@
 
 <div class="doc_text">
 
-<p>TODO</p>
+  <p>The most difficult part of adding LLVM to the build of a project
+    is to determine the set of LLVM libraries corresponding to the set
+    of required LLVM features. What follows is an example of how to
+    obtain this information:</p>
+
+  <div class="doc_code">
+    <pre>
+    <b># A convenience variable:</b>
+    set(LLVM_ROOT "" CACHE PATH "Root of LLVM install.")
+    <b># A bit of a sanity check:</b>
+    if( NOT EXISTS ${LLVM_ROOT}/include/llvm )
+    message(FATAL_ERROR "LLVM_ROOT (${LLVM_ROOT}) is not a valid LLVM install")
+    endif()
+    <b># We incorporate the CMake features provided by LLVM:</b>
+    set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${LLVM_ROOT}/share/llvm/cmake")
+    include(LLVM)
+    <b># Now set the header and library paths:</b>
+    include_directories( ${LLVM_ROOT}/include )
+    link_directories( ${LLVM_ROOT}/lib )
+    <b># Let's suppose we want to build a JIT compiler with support for
+    # binary code (no interpreter):</b>
+    llvm_map_components_to_libraries(REQ_LLVM_LIBRARIES jit native)
+    <b># Finally, we link the LLVM libraries to our executable:</b>
+    target_link_libraries(mycompiler ${REQ_LLVM_LIBRARIES})
+    </pre>
+  </div>
+
+  <p>This assumes that LLVM_ROOT points to an install of LLVM. The
+    procedure works too for uninstalled builds although we need to take
+    care to add an <i>include_directories</i> for the location of the
+    headers on the LLVM source directory (if we are building
+    out-of-source.)</p>
 
 </div>
 
@@ -350,7 +414,7 @@
 
   <a href="mailto:ofv@wanadoo.es">Oscar Fuentes</a><br>
   <a href="http://llvm.org">LLVM Compiler Infrastructure</a><br>
-  Last modified: $Date: 2008-12-31 03:59:36 +0100 (Wed, 31 Dec 2008) $
+  Last modified: $Date: 2010-08-09 03:59:36 +0100 (Mon, 9 Aug 2010) $
 </address>
 
 </body>

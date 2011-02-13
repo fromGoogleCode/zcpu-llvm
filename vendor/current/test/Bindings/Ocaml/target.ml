@@ -1,20 +1,25 @@
-(* RUN: %ocamlc -warn-error A llvm.cma llvm_target.cma %s -o %t 2> /dev/null
+(* RUN: %ocamlopt -warn-error A llvm.cmxa llvm_target.cmxa %s -o %t
+ * RUN: %t %t.bc
  *)
 
-(* Note: It takes several seconds for ocamlc to link an executable with
+(* Note: It takes several seconds for ocamlopt to link an executable with
          libLLVMCore.a, so it's better to write a big test than a bunch of
          little ones. *)
 
 open Llvm
 open Llvm_target
 
+
 let context = global_context ()
 let i32_type = Llvm.i32_type context
 let i64_type = Llvm.i64_type context
 
 (* Tiny unit test framework - really just to help find which line is busted *)
+let print_checkpoints = false
+
 let suite name f =
-  prerr_endline (name ^ ":");
+  if print_checkpoints then
+    prerr_endline (name ^ ":");
   f ()
 
 

@@ -15,7 +15,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/System/DynamicLibrary.h"
-#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Config/config.h"
 #include <cstdio>
 #include <cstring>
@@ -24,6 +23,19 @@
 
 // Collection of symbol name/value pairs to be searched prior to any libraries.
 static std::map<std::string, void*> *ExplicitSymbols = 0;
+
+namespace {
+
+struct ExplicitSymbolsDeleter {
+  ~ExplicitSymbolsDeleter() {
+    if (ExplicitSymbols)
+      delete ExplicitSymbols;
+  }
+};
+
+}
+
+static ExplicitSymbolsDeleter Dummy;
 
 void llvm::sys::DynamicLibrary::AddSymbol(const char* symbolName,
                                           void *symbolValue) {
@@ -38,6 +50,7 @@ void llvm::sys::DynamicLibrary::AddSymbol(const char* symbolName,
 
 #else
 
+#if HAVE_DLFCN_H
 #include <dlfcn.h>
 using namespace llvm;
 using namespace llvm::sys;
@@ -57,10 +70,31 @@ bool DynamicLibrary::LoadLibraryPermanently(const char *Filename,
     if (ErrMsg) *ErrMsg = dlerror();
     return true;
   }
+#ifdef __CYGWIN__
+  // Cygwin searches symbols only in the main
+  // with the handle of dlopen(NULL, RTLD_GLOBAL).
+  if (Filename == NULL)
+    H = RTLD_DEFAULT;
+#endif
   if (OpenedHandles == 0)
     OpenedHandles = new std::vector<void *>();
   OpenedHandles->push_back(H);
   return false;
+}
+#else
+
+using namespace llvm;
+using namespace llvm::sys;
+
+bool DynamicLibrary::LoadLibraryPermanently(const char *Filename,
+                                            std::string *ErrMsg) {
+  if (ErrMsg) *ErrMsg = "dlopen() not supported on this platform";
+  return true;
+}
+#endif
+
+namespace llvm {
+void *SearchForAddressOfSpecialSymbol(const char* symbolName);
 }
 
 void* DynamicLibrary::SearchForAddressOfSymbol(const char* symbolName) {
@@ -74,6 +108,7 @@ void* DynamicLibrary::SearchForAddressOfSymbol(const char* symbolName) {
       return I->second;
   }
 
+#if HAVE_DLFCN_H
   // Now search the libraries.
   if (OpenedHandles) {
     for (std::vector<void *>::iterator I = OpenedHandles->begin(),
@@ -85,43 +120,10 @@ void* DynamicLibrary::SearchForAddressOfSymbol(const char* symbolName) {
       }
     }
   }
-
-#define EXPLICIT_SYMBOL(SYM) \
-   extern void *SYM; if (!strcmp(symbolName, #SYM)) return &SYM
-
-  // If this is darwin, it has some funky issues, try to solve them here.  Some
-  // important symbols are marked 'private external' which doesn't allow
-  // SearchForAddressOfSymbol to find them.  As such, we special case them here,
-  // there is only a small handful of them.
-
-#ifdef __APPLE__
-  {
-    EXPLICIT_SYMBOL(__ashldi3);
-    EXPLICIT_SYMBOL(__ashrdi3);
-    EXPLICIT_SYMBOL(__cmpdi2);
-    EXPLICIT_SYMBOL(__divdi3);
-    EXPLICIT_SYMBOL(__eprintf);
-    EXPLICIT_SYMBOL(__fixdfdi);
-    EXPLICIT_SYMBOL(__fixsfdi);
-    EXPLICIT_SYMBOL(__fixunsdfdi);
-    EXPLICIT_SYMBOL(__fixunssfdi);
-    EXPLICIT_SYMBOL(__floatdidf);
-    EXPLICIT_SYMBOL(__floatdisf);
-    EXPLICIT_SYMBOL(__lshrdi3);
-    EXPLICIT_SYMBOL(__moddi3);
-    EXPLICIT_SYMBOL(__udivdi3);
-    EXPLICIT_SYMBOL(__umoddi3);
-  }
 #endif
 
-#ifdef __CYGWIN__
-  {
-    EXPLICIT_SYMBOL(_alloca);
-    EXPLICIT_SYMBOL(__main);
-  }
-#endif
-
-#undef EXPLICIT_SYMBOL
+  if (void *Result = llvm::SearchForAddressOfSpecialSymbol(symbolName))
+    return Result;
 
 // This macro returns the address of a well-known, explicit symbol
 #define EXPLICIT_SYMBOL(SYM) \

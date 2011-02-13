@@ -13,7 +13,7 @@
 
 #include "SPU.h"
 #include "SPURegisterNames.h"
-#include "SPUTargetAsmInfo.h"
+#include "SPUMCAsmInfo.h"
 #include "SPUTargetMachine.h"
 #include "llvm/PassManager.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
@@ -25,7 +25,7 @@ using namespace llvm;
 extern "C" void LLVMInitializeCellSPUTarget() { 
   // Register the target.
   RegisterTargetMachine<SPUTargetMachine> X(TheCellSPUTarget);
-  RegisterAsmInfo<SPULinuxTargetAsmInfo> Y(TheCellSPUTarget);
+  RegisterAsmInfo<SPULinuxMCAsmInfo> Y(TheCellSPUTarget);
 }
 
 const std::pair<unsigned, int> *
@@ -42,6 +42,7 @@ SPUTargetMachine::SPUTargetMachine(const Target &T, const std::string &TT,
     InstrInfo(*this),
     FrameInfo(*this),
     TLInfo(*this),
+    TSInfo(*this),
     InstrItins(Subtarget.getInstrItineraryData()) {
   // For the time being, use static relocations, since there's really no
   // support for PIC yet.

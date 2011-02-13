@@ -31,7 +31,6 @@
 #include "llvm/Function.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CFG.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Transforms/Scalar.h"
 #include <set>
@@ -40,9 +39,9 @@ using namespace llvm;
 STATISTIC(NumMoved, "Number of basic blocks moved");
 
 namespace {
-  struct VISIBILITY_HIDDEN BlockPlacement : public FunctionPass {
+  struct BlockPlacement : public FunctionPass {
     static char ID; // Pass identification, replacement for typeid
-    BlockPlacement() : FunctionPass(&ID) {}
+    BlockPlacement() : FunctionPass(ID) {}
 
     virtual bool runOnFunction(Function &F);
 
@@ -75,8 +74,8 @@ namespace {
 }
 
 char BlockPlacement::ID = 0;
-static RegisterPass<BlockPlacement>
-X("block-placement", "Profile Guided Basic Block Placement");
+INITIALIZE_PASS(BlockPlacement, "block-placement",
+                "Profile Guided Basic Block Placement", false, false);
 
 FunctionPass *llvm::createBlockPlacementPass() { return new BlockPlacement(); }
 

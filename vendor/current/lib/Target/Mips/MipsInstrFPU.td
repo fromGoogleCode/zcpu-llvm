@@ -1,4 +1,4 @@
-//===- MipsInstrFPU.td - Mips FPU Instruction Information -------*- C++ -*-===//
+//===- MipsInstrFPU.td - Mips FPU Instruction Information --*- tablegen -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -26,8 +26,9 @@
 // Floating Point Compare and Branch
 def SDT_MipsFPBrcond : SDTypeProfile<0, 3, [SDTCisSameAs<0, 2>, SDTCisInt<0>,
                                      SDTCisVT<1, OtherVT>]>;
-def SDT_MipsFPCmp : SDTypeProfile<0, 3, [SDTCisSameAs<0, 1>, SDTCisFP<0>, 
-                                  SDTCisInt<2>]>;
+def SDT_MipsFPCmp : SDTypeProfile<1, 3, [SDTCisVT<0, i32>,
+                                         SDTCisSameAs<1, 2>, SDTCisFP<1>, 
+                                         SDTCisInt<3>]>;
 def SDT_MipsFPSelectCC : SDTypeProfile<1, 4, [SDTCisInt<1>, SDTCisInt<4>,
                                   SDTCisSameAs<0, 2>, SDTCisSameAs<2, 3>]>;
 
@@ -48,6 +49,7 @@ let PrintMethod = "printFCCOperand" in
 def In32BitMode      : Predicate<"!Subtarget.isFP64bit()">;
 def IsSingleFloat    : Predicate<"Subtarget.isSingleFloat()">;
 def IsNotSingleFloat : Predicate<"!Subtarget.isSingleFloat()">;
+def IsNotMipsI       : Predicate<"!Subtarget.isMips1()">;
 
 //===----------------------------------------------------------------------===//
 // Instruction Class Templates
@@ -112,7 +114,6 @@ let ft = 0 in {
   defm ROUND_W : FFR1_1<0b001100, "round.w">;
   defm TRUNC_W : FFR1_1<0b001101, "trunc.w">;
   defm CVTW    : FFR1_1<0b100100, "cvt.w">;
-  defm FMOV    : FFR1_1<0b000110, "mov">;
 
   defm FABS    : FFR1_2<0b000101, "abs",  fabs>; 
   defm FNEG    : FFR1_2<0b000111, "neg",  fneg>; 
@@ -172,8 +173,13 @@ let fd = 0 in {
                   "mtc1 $rt, $fs", []>;
 }
 
+def FMOV_S32 : FFR<0x11, 0b000110, 0x0, (outs FGR32:$fd), (ins FGR32:$fs),
+                   "mov.s $fd, $fs", []>;
+def FMOV_D32 : FFR<0x11, 0b000110, 0x1, (outs AFGR64:$fd), (ins AFGR64:$fs),
+                   "mov.d $fd, $fs", []>;
+
 /// Floating Point Memory Instructions
-let Predicates = [IsNotSingleFloat] in {
+let Predicates = [IsNotSingleFloat, IsNotMipsI] in {
   def LDC1 : FFI<0b110101, (outs AFGR64:$ft), (ins mem:$addr), 
                  "ldc1 $ft, $addr", [(set AFGR64:$ft, (load addr:$addr))]>;
 
@@ -239,12 +245,13 @@ def MIPS_FCOND_NGT  : PatLeaf<(i32 15)>;
 /// Floating Point Compare
 let hasDelaySlot = 1, Defs=[FCR31] in {
   def FCMP_S32 : FCC<0x0, (outs), (ins FGR32:$fs, FGR32:$ft, condcode:$cc),
-      "c.$cc.s $fs, $ft", [(MipsFPCmp FGR32:$fs, FGR32:$ft, imm:$cc), 
-      (implicit FCR31)]>;
+      "c.$cc.s $fs, $ft",
+        [(set FCR31, (MipsFPCmp FGR32:$fs, FGR32:$ft, imm:$cc))]>; 
   
   def FCMP_D32 : FCC<0x1, (outs), (ins AFGR64:$fs, AFGR64:$ft, condcode:$cc),
-      "c.$cc.d $fs, $ft", [(MipsFPCmp AFGR64:$fs, AFGR64:$ft, imm:$cc),
-      (implicit FCR31)]>, Requires<[In32BitMode]>;
+      "c.$cc.d $fs, $ft",
+       [(set FCR31, (MipsFPCmp AFGR64:$fs, AFGR64:$ft, imm:$cc))]>,
+      Requires<[In32BitMode]>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -253,7 +260,7 @@ let hasDelaySlot = 1, Defs=[FCR31] in {
 
 // For some explanation, see Select_CC at MipsInstrInfo.td. We also embedd a 
 // condiciton code to enable easy handling by the Custom Inserter.
-let usesCustomDAGSchedInserter = 1, Uses=[FCR31] in {
+let usesCustomInserter = 1, Uses=[FCR31] in {
   class PseudoFPSelCC<RegisterClass RC, string asmstr> : 
     MipsPseudo<(outs RC:$dst), 
                (ins CPURegs:$CmpRes, RC:$T, RC:$F, condcode:$cc), asmstr, 
@@ -284,7 +291,12 @@ def fpimm0 : PatLeaf<(fpimm), [{
   return N->isExactlyValue(+0.0);
 }]>;
 
+def fpimm0neg : PatLeaf<(fpimm), [{
+  return N->isExactlyValue(-0.0);
+}]>;
+
 def : Pat<(f32 fpimm0), (MTC1 ZERO)>;
+def : Pat<(f32 fpimm0neg), (FNEG_S32 (MTC1 ZERO))>;
 
 def : Pat<(f32 (sint_to_fp CPURegs:$src)), (CVTS_W32 (MTC1 CPURegs:$src))>;
 def : Pat<(f64 (sint_to_fp CPURegs:$src)), (CVTD_W32 (MTC1 CPURegs:$src))>;

@@ -42,9 +42,6 @@ public:
   /// Code Generation virtual methods...
   const unsigned *getCalleeSavedRegs(const MachineFunction* MF = 0) const;
 
-  const TargetRegisterClass* const*
-  getCalleeSavedRegClasses(const MachineFunction *MF = 0) const;
-
   BitVector getReservedRegs(const MachineFunction &MF) const;
 
   /// targetHandlesStackFrameRounding - Returns true if the target is
@@ -82,7 +79,7 @@ public:
 
   // Debug information queries.
   unsigned getRARegister() const;
-  unsigned getFrameRegister(MachineFunction &MF) const;
+  unsigned getFrameRegister(const MachineFunction &MF) const;
   void getInitialFrameState(std::vector<MachineMove> &Moves) const;
 
   // Exception handling queries.

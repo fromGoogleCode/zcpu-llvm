@@ -1,16 +1,19 @@
 // Check that multivalued options work.
 // The dummy tool and graph are required to silence warnings.
-// RUN: tblgen -I $srcroot/include --gen-llvmc %s -o %t
-// RUN: grep cl::multi_val(2) %t | count 1
+// RUN: tblgen -I %p/../../include --gen-llvmc %s -o %t
+// RUN: FileCheck -input-file %t %s
+// RUN: %compile_cxx %t
+// XFAIL: vg_leak
 
 include "llvm/CompilerDriver/Common.td"
 
 def OptList : OptionList<[
+    // CHECK: cl::multi_val(2)
     (prefix_list_option "foo", (multi_val 2)),
-    (parameter_list_option "baz", (multi_val 2), (extern))]>;
+    (parameter_list_option "baz", (multi_val 2))]>;
 
 def dummy_tool : Tool<[
-(cmd_line "dummy_cmd"),
+(command "dummy_cmd"),
 (in_language "dummy"),
 (out_language "dummy"),
 (actions (case
@@ -18,4 +21,4 @@ def dummy_tool : Tool<[
          (not_empty "baz"), (forward "baz")))
 ]>;
 
-def DummyGraph : CompilationGraph<[SimpleEdge<"root", "dummy_tool">]>;
+def DummyGraph : CompilationGraph<[(edge "root", "dummy_tool")]>;

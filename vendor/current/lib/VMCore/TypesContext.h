@@ -1,4 +1,4 @@
-//===-------------------- TypesContext.h - Implementation ------*- C++ -*--===//
+//===-- TypesContext.h - Types-related Context Internals ------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -68,7 +68,7 @@ static unsigned getSubElementHash(const Type *Ty) {
 class IntegerValType {
   uint32_t bits;
 public:
-  IntegerValType(uint16_t numbits) : bits(numbits) {}
+  IntegerValType(uint32_t numbits) : bits(numbits) {}
 
   static IntegerValType get(const IntegerType *Ty) {
     return IntegerValType(Ty->getBitWidth());
@@ -216,12 +216,10 @@ protected:
   ///
   std::multimap<unsigned, PATypeHolder> TypesByHash;
 
-public:
   ~TypeMapBase() {
     // PATypeHolder won't destroy non-abstract types.
     // We can't destroy them by simply iterating, because
     // they may contain references to each-other.
-#if 0
     for (std::multimap<unsigned, PATypeHolder>::iterator I
          = TypesByHash.begin(), E = TypesByHash.end(); I != E; ++I) {
       Type *Ty = const_cast<Type*>(I->second.Ty);
@@ -235,9 +233,9 @@ public:
         operator delete(Ty);
       }
     }
-#endif
   }
 
+public:
   void RemoveFromTypesByHash(unsigned Hash, const Type *Ty) {
     std::multimap<unsigned, PATypeHolder>::iterator I =
       TypesByHash.lower_bound(Hash);
@@ -283,7 +281,6 @@ class TypeMap : public TypeMapBase {
   std::map<ValType, PATypeHolder> Map;
 public:
   typedef typename std::map<ValType, PATypeHolder>::iterator iterator;
-  ~TypeMap() { print("ON EXIT"); }
 
   inline TypeClass *get(const ValType &V) {
     iterator I = Map.find(V);
@@ -304,8 +301,8 @@ public:
   void RefineAbstractType(TypeClass *Ty, const DerivedType *OldType,
                         const Type *NewType) {
 #ifdef DEBUG_MERGE_TYPES
-    DOUT << "RefineAbstractType(" << (void*)OldType << "[" << *OldType
-         << "], " << (void*)NewType << " [" << *NewType << "])\n";
+    DEBUG(dbgs() << "RefineAbstractType(" << (void*)OldType << "[" << *OldType
+                 << "], " << (void*)NewType << " [" << *NewType << "])\n");
 #endif
     
     // Otherwise, we are changing one subelement type into another.  Clearly the
@@ -347,7 +344,7 @@ public:
         // We already have this type in the table.  Get rid of the newly refined
         // type.
         TypeClass *NewTy = cast<TypeClass>((Type*)I->second.get());
-        Ty->unlockedRefineAbstractTypeTo(NewTy);
+        Ty->refineAbstractTypeTo(NewTy);
         return;
       }
     } else {
@@ -362,31 +359,33 @@ public:
         if (I->second == Ty) {
           // Remember the position of the old type if we see it in our scan.
           Entry = I;
-        } else {
-          if (TypesEqual(Ty, I->second)) {
-            TypeClass *NewTy = cast<TypeClass>((Type*)I->second.get());
-
-            // Remove the old entry form TypesByHash.  If the hash values differ
-            // now, remove it from the old place.  Otherwise, continue scanning
-            // withing this hashcode to reduce work.
-            if (NewTypeHash != OldTypeHash) {
-              RemoveFromTypesByHash(OldTypeHash, Ty);
-            } else {
-              if (Entry == E) {
-                // Find the location of Ty in the TypesByHash structure if we
-                // haven't seen it already.
-                while (I->second != Ty) {
-                  ++I;
-                  assert(I != E && "Structure doesn't contain type??");
-                }
-                Entry = I;
-              }
-              TypesByHash.erase(Entry);
-            }
-            Ty->unlockedRefineAbstractTypeTo(NewTy);
-            return;
-          }
+          continue;
         }
+        
+        if (!TypesEqual(Ty, I->second))
+          continue;
+        
+        TypeClass *NewTy = cast<TypeClass>((Type*)I->second.get());
+
+        // Remove the old entry form TypesByHash.  If the hash values differ
+        // now, remove it from the old place.  Otherwise, continue scanning
+        // withing this hashcode to reduce work.
+        if (NewTypeHash != OldTypeHash) {
+          RemoveFromTypesByHash(OldTypeHash, Ty);
+        } else {
+          if (Entry == E) {
+            // Find the location of Ty in the TypesByHash structure if we
+            // haven't seen it already.
+            while (I->second != Ty) {
+              ++I;
+              assert(I != E && "Structure doesn't contain type??");
+            }
+            Entry = I;
+          }
+          TypesByHash.erase(Entry);
+        }
+        Ty->refineAbstractTypeTo(NewTy);
+        return;
       }
 
       // If there is no existing type of the same structure, we reinsert an
@@ -410,12 +409,12 @@ public:
 
   void print(const char *Arg) const {
 #ifdef DEBUG_MERGE_TYPES
-    DOUT << "TypeMap<>::" << Arg << " table contents:\n";
+    DEBUG(dbgs() << "TypeMap<>::" << Arg << " table contents:\n");
     unsigned i = 0;
     for (typename std::map<ValType, PATypeHolder>::const_iterator I
            = Map.begin(), E = Map.end(); I != E; ++I)
-      DOUT << " " << (++i) << ". " << (void*)I->second.get() << " "
-           << *I->second.get() << "\n";
+      DEBUG(dbgs() << " " << (++i) << ". " << (void*)I->second.get() << " "
+                   << *I->second.get() << "\n");
 #endif
   }
 

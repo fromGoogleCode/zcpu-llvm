@@ -1,12 +1,12 @@
-; RUN: llvm-as < %s | llc -mtriple=thumbv7-apple-darwin9 -mattr=+vfp2,+thumb2 | FileCheck %s
+; RUN: llc < %s -mtriple=thumbv7-apple-darwin9 -mattr=+vfp2,+thumb2 | FileCheck %s
 ; rdar://7076238
 
 @"\01LC" = external constant [36 x i8], align 1		; <[36 x i8]*> [#uses=1]
 
-define arm_apcscc i32 @t(i32, ...) nounwind {
+define i32 @t(i32, ...) nounwind {
 entry:
 ; CHECK: t:
-; CHECK: add r7, sp, #3 * 4
+; CHECK: add r7, sp, #12
 	%1 = load i8** undef, align 4		; <i8*> [#uses=3]
 	%2 = getelementptr i8* %1, i32 4		; <i8*> [#uses=1]
 	%3 = getelementptr i8* %1, i32 8		; <i8*> [#uses=1]
@@ -24,7 +24,7 @@ entry:
 	%15 = sext i8 %6 to i32		; <i32> [#uses=2]
 	%16 = sext i16 %10 to i32		; <i32> [#uses=2]
 	%17 = sext i16 %13 to i32		; <i32> [#uses=2]
-	%18 = call arm_apcscc  i32 (i8*, ...)* @printf(i8* getelementptr ([36 x i8]* @"\01LC", i32 0, i32 0), i32 -128, i32 0, i32 %15, i32 %16, i32 %17, i32 0, i32 %14) nounwind		; <i32> [#uses=0]
+	%18 = call  i32 (i8*, ...)* @printf(i8* getelementptr ([36 x i8]* @"\01LC", i32 0, i32 0), i32 -128, i32 0, i32 %15, i32 %16, i32 %17, i32 0, i32 %14) nounwind		; <i32> [#uses=0]
 	%19 = add i32 0, %15		; <i32> [#uses=1]
 	%20 = add i32 %19, %16		; <i32> [#uses=1]
 	%21 = add i32 %20, %14		; <i32> [#uses=1]
@@ -33,4 +33,4 @@ entry:
 	ret i32 %23
 }
 
-declare arm_apcscc i32 @printf(i8* nocapture, ...) nounwind
+declare i32 @printf(i8* nocapture, ...) nounwind

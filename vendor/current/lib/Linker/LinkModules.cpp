@@ -25,11 +25,12 @@
 #include "llvm/ValueSymbolTable.h"
 #include "llvm/Instructions.h"
 #include "llvm/Assembly/Writer.h"
-#include "llvm/Support/Streams.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/System/Path.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/ADT/DenseMap.h"
-#include <sstream>
 using namespace llvm;
 
 // Error - Simple wrapper function to conditionally assign to E and return true.
@@ -96,15 +97,6 @@ public:
     return 0;
   }
 
-  /// erase - Remove the specified type, returning true if it was in the set.
-  bool erase(const Type *Ty) {
-    if (!TheMap.erase(Ty))
-      return false;
-    if (Ty->isAbstract())
-      Ty->removeAbstractTypeUser(this);
-    return true;
-  }
-
   /// insert - This returns true if the pointer was new to the set, false if it
   /// was already in the set.
   bool insert(const Type *Src, const Type *Dst) {
@@ -145,7 +137,7 @@ protected:
 
   // for debugging...
   virtual void dump() const {
-    cerr << "AbstractTypeSet!\n";
+    dbgs() << "AbstractTypeSet!\n";
   }
 };
 }
@@ -159,7 +151,7 @@ static bool RecursiveResolveTypesI(const Type *DstTy, const Type *SrcTy,
   if (DstTy == SrcTy) return false;       // If already equal, noop
 
   // If we found our opaque type, resolve it now!
-  if (isa<OpaqueType>(DstTy) || isa<OpaqueType>(SrcTy))
+  if (DstTy->isOpaqueTy() || SrcTy->isOpaqueTy())
     return ResolveTypes(DstTy, SrcTy);
 
   // Two types cannot be resolved together if they are of different primitive
@@ -334,95 +326,6 @@ static bool LinkTypes(Module *Dest, const Module *Src, std::string *Err) {
   return false;
 }
 
-#ifndef NDEBUG
-static void PrintMap(const std::map<const Value*, Value*> &M) {
-  for (std::map<const Value*, Value*>::const_iterator I = M.begin(), E =M.end();
-       I != E; ++I) {
-    cerr << " Fr: " << (void*)I->first << " ";
-    I->first->dump();
-    cerr << " To: " << (void*)I->second << " ";
-    I->second->dump();
-    cerr << "\n";
-  }
-}
-#endif
-
-
-// RemapOperand - Use ValueMap to convert constants from one module to another.
-static Value *RemapOperand(const Value *In,
-                           std::map<const Value*, Value*> &ValueMap,
-                           LLVMContext &Context) {
-  std::map<const Value*,Value*>::const_iterator I = ValueMap.find(In);
-  if (I != ValueMap.end())
-    return I->second;
-
-  // Check to see if it's a constant that we are interested in transforming.
-  Value *Result = 0;
-  if (const Constant *CPV = dyn_cast<Constant>(In)) {
-    if ((!isa<DerivedType>(CPV->getType()) && !isa<ConstantExpr>(CPV)) ||
-        isa<ConstantInt>(CPV) || isa<ConstantAggregateZero>(CPV))
-      return const_cast<Constant*>(CPV);   // Simple constants stay identical.
-
-    if (const ConstantArray *CPA = dyn_cast<ConstantArray>(CPV)) {
-      std::vector<Constant*> Operands(CPA->getNumOperands());
-      for (unsigned i = 0, e = CPA->getNumOperands(); i != e; ++i)
-        Operands[i] =cast<Constant>(RemapOperand(CPA->getOperand(i), ValueMap, 
-                                                 Context));
-      Result =
-          ConstantArray::get(cast<ArrayType>(CPA->getType()), Operands);
-    } else if (const ConstantStruct *CPS = dyn_cast<ConstantStruct>(CPV)) {
-      std::vector<Constant*> Operands(CPS->getNumOperands());
-      for (unsigned i = 0, e = CPS->getNumOperands(); i != e; ++i)
-        Operands[i] =cast<Constant>(RemapOperand(CPS->getOperand(i), ValueMap,
-                                                 Context));
-      Result =
-         ConstantStruct::get(cast<StructType>(CPS->getType()), Operands);
-    } else if (isa<ConstantPointerNull>(CPV) || isa<UndefValue>(CPV)) {
-      Result = const_cast<Constant*>(CPV);
-    } else if (const ConstantVector *CP = dyn_cast<ConstantVector>(CPV)) {
-      std::vector<Constant*> Operands(CP->getNumOperands());
-      for (unsigned i = 0, e = CP->getNumOperands(); i != e; ++i)
-        Operands[i] = cast<Constant>(RemapOperand(CP->getOperand(i), ValueMap,
-                                     Context));
-      Result = ConstantVector::get(Operands);
-    } else if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(CPV)) {
-      std::vector<Constant*> Ops;
-      for (unsigned i = 0, e = CE->getNumOperands(); i != e; ++i)
-        Ops.push_back(cast<Constant>(RemapOperand(CE->getOperand(i),ValueMap,
-                                     Context)));
-      Result = CE->getWithOperands(Ops);
-    } else {
-      assert(!isa<GlobalValue>(CPV) && "Unmapped global?");
-      llvm_unreachable("Unknown type of derived type constant value!");
-    }
-  } else if (const MDNode *N = dyn_cast<MDNode>(In)) {
-    std::vector<Value*> Elems;
-    for (unsigned i = 0, e = N->getNumElements(); i !=e; ++i)
-      Elems.push_back(RemapOperand(N->getElement(i), ValueMap, Context));
-    if (!Elems.empty())
-      Result = MDNode::get(Context, &Elems[0], Elems.size());
-  } else if (const MDString *MDS = dyn_cast<MDString>(In)) {
-    Result = MDString::get(Context, MDS->getString());
-  } else if (isa<InlineAsm>(In)) {
-    Result = const_cast<Value*>(In);
-  }
-
-  // Cache the mapping in our local map structure
-  if (Result) {
-    ValueMap[In] = Result;
-    return Result;
-  }
-
-#ifndef NDEBUG
-  cerr << "LinkModules ValueMap: \n";
-  PrintMap(ValueMap);
-
-  cerr << "Couldn't remap value: " << (void*)In << " " << *In << "\n";
-  llvm_unreachable("Couldn't remap value!");
-#endif
-  return 0;
-}
-
 /// ForceRenaming - The LLVM SymbolTable class autorenames globals that conflict
 /// in the symbol table.  This is good for all clients except for us.  Go
 /// through the trouble to force this back.
@@ -539,25 +442,24 @@ static bool GetLinkageResult(GlobalValue *Dest, const GlobalValue *Src,
 }
 
 // Insert all of the named mdnoes in Src into the Dest module.
-static void LinkNamedMDNodes(Module *Dest, Module *Src) {
+static void LinkNamedMDNodes(Module *Dest, Module *Src,
+                             ValueToValueMapTy &ValueMap) {
   for (Module::const_named_metadata_iterator I = Src->named_metadata_begin(),
          E = Src->named_metadata_end(); I != E; ++I) {
     const NamedMDNode *SrcNMD = I;
-    NamedMDNode *DestNMD = Dest->getNamedMetadata(SrcNMD->getName());
-    if (!DestNMD)
-      NamedMDNode::Create(SrcNMD, Dest);
-    else {
-      // Add Src elements into Dest node.
-      for (unsigned i = 0, e = SrcNMD->getNumElements(); i != e; ++i) 
-        DestNMD->addElement(SrcNMD->getElement(i));
-    }
+    NamedMDNode *DestNMD = Dest->getOrInsertNamedMetadata(SrcNMD->getName());
+    // Add Src elements into Dest node.
+    for (unsigned i = 0, e = SrcNMD->getNumOperands(); i != e; ++i) 
+      DestNMD->addOperand(cast<MDNode>(MapValue(SrcNMD->getOperand(i),
+                                                ValueMap,
+                                                true)));
   }
 }
 
 // LinkGlobals - Loop through the global variables in the src module and merge
 // them into the dest module.
 static bool LinkGlobals(Module *Dest, const Module *Src,
-                        std::map<const Value*, Value*> &ValueMap,
+                        ValueToValueMapTy &ValueMap,
                     std::multimap<std::string, GlobalVariable *> &AppendingVars,
                         std::string *Err) {
   ValueSymbolTable &DestSymTab = Dest->getValueSymbolTable();
@@ -674,7 +576,6 @@ static bool LinkGlobals(Module *Dest, const Module *Src,
         Var->eraseFromParent();
       else
         cast<Function>(DGV)->eraseFromParent();
-      DGV = NewDGV;
 
       // If the symbol table renamed the global, but it is an externally visible
       // symbol, DGV must be an existing global with internal linkage.  Rename.
@@ -734,6 +635,12 @@ CalculateAliasLinkage(const GlobalValue *SGV, const GlobalValue *DGV) {
   else if (SL == GlobalValue::LinkerPrivateLinkage &&
            DL == GlobalValue::LinkerPrivateLinkage)
     return GlobalValue::LinkerPrivateLinkage;
+  else if (SL == GlobalValue::LinkerPrivateWeakLinkage &&
+           DL == GlobalValue::LinkerPrivateWeakLinkage)
+    return GlobalValue::LinkerPrivateWeakLinkage;
+  else if (SL == GlobalValue::LinkerPrivateWeakDefAutoLinkage &&
+           DL == GlobalValue::LinkerPrivateWeakDefAutoLinkage)
+    return GlobalValue::LinkerPrivateWeakDefAutoLinkage;
   else {
     assert (SL == GlobalValue::PrivateLinkage &&
             DL == GlobalValue::PrivateLinkage && "Unexpected linkage type");
@@ -745,7 +652,7 @@ CalculateAliasLinkage(const GlobalValue *SGV, const GlobalValue *DGV) {
 // dest module. We're assuming, that all functions/global variables were already
 // linked in.
 static bool LinkAlias(Module *Dest, const Module *Src,
-                      std::map<const Value*, Value*> &ValueMap,
+                      ValueToValueMapTy &ValueMap,
                       std::string *Err) {
   // Loop over all alias in the src module
   for (Module::const_alias_iterator I = Src->alias_begin(),
@@ -756,7 +663,7 @@ static bool LinkAlias(Module *Dest, const Module *Src,
 
     // Globals were already linked, thus we can just query ValueMap for variant
     // of SAliasee in Dest.
-    std::map<const Value*,Value*>::const_iterator VMI = ValueMap.find(SAliasee);
+    ValueToValueMapTy::const_iterator VMI = ValueMap.find(SAliasee);
     assert(VMI != ValueMap.end() && "Aliasee not linked");
     GlobalValue* DAliasee = cast<GlobalValue>(VMI->second);
     GlobalValue* DGV = NULL;
@@ -865,9 +772,14 @@ static bool LinkAlias(Module *Dest, const Module *Src,
     } else {
       // No linking to be performed, simply create an identical version of the
       // alias over in the dest module...
-
+      Constant *Aliasee = DAliasee;
+      // Fixup aliases to bitcasts.  Note that aliases to GEPs are still broken
+      // by this, but aliases to GEPs are broken to a lot of other things, so
+      // it's less important.
+      if (SGA->getType() != DAliasee->getType())
+        Aliasee = ConstantExpr::getBitCast(DAliasee, SGA->getType());
       NewGA = new GlobalAlias(SGA->getType(), SGA->getLinkage(),
-                              SGA->getName(), DAliasee, Dest);
+                              SGA->getName(), Aliasee, Dest);
       CopyGVAttributes(NewGA, SGA);
 
       // Proceed to 'common' steps
@@ -882,7 +794,7 @@ static bool LinkAlias(Module *Dest, const Module *Src,
       ForceRenaming(NewGA, SGA->getName());
 
     // Remember this mapping so uses in the source module get remapped
-    // later by RemapOperand.
+    // later by MapValue.
     ValueMap[SGA] = NewGA;
   }
 
@@ -893,7 +805,7 @@ static bool LinkAlias(Module *Dest, const Module *Src,
 // LinkGlobalInits - Update the initializers in the Dest module now that all
 // globals that may be referenced are in Dest.
 static bool LinkGlobalInits(Module *Dest, const Module *Src,
-                            std::map<const Value*, Value*> &ValueMap,
+                            ValueToValueMapTy &ValueMap,
                             std::string *Err) {
   // Loop over all of the globals in the src module, mapping them over as we go
   for (Module::const_global_iterator I = Src->global_begin(),
@@ -903,8 +815,7 @@ static bool LinkGlobalInits(Module *Dest, const Module *Src,
     if (SGV->hasInitializer()) {      // Only process initialized GV's
       // Figure out what the initializer looks like in the dest module...
       Constant *SInit =
-        cast<Constant>(RemapOperand(SGV->getInitializer(), ValueMap,
-                       Dest->getContext()));
+        cast<Constant>(MapValue(SGV->getInitializer(), ValueMap, true));
       // Grab destination global variable or alias.
       GlobalValue *DGV = cast<GlobalValue>(ValueMap[SGV]->stripPointerCasts());
 
@@ -949,7 +860,7 @@ static bool LinkGlobalInits(Module *Dest, const Module *Src,
 // to the Dest function...
 //
 static bool LinkFunctionProtos(Module *Dest, const Module *Src,
-                               std::map<const Value*, Value*> &ValueMap,
+                               ValueToValueMapTy &ValueMap,
                                std::string *Err) {
   ValueSymbolTable &DestSymTab = Dest->getValueSymbolTable();
 
@@ -1034,7 +945,7 @@ static bool LinkFunctionProtos(Module *Dest, const Module *Src,
         ForceRenaming(NewDF, SF->getName());
 
       // Remember this mapping so uses in the source module get remapped
-      // later by RemapOperand.
+      // later by MapValue.
       ValueMap[SF] = NewDF;
       continue;
     }
@@ -1064,7 +975,7 @@ static bool LinkFunctionProtos(Module *Dest, const Module *Src,
 // fix up references to values.  At this point we know that Dest is an external
 // function, and that Src is not.
 static bool LinkFunctionBody(Function *Dest, Function *Src,
-                             std::map<const Value*, Value*> &ValueMap,
+                             ValueToValueMapTy &ValueMap,
                              std::string *Err) {
   assert(Src && Dest && Dest->isDeclaration() && !Src->isDeclaration());
 
@@ -1086,12 +997,30 @@ static bool LinkFunctionBody(Function *Dest, Function *Src,
   // the Source function as operands.  Loop through all of the operands of the
   // functions and patch them up to point to the local versions...
   //
+  // This is the same as RemapInstruction, except that it avoids remapping
+  // instruction and basic block operands.
+  //
   for (Function::iterator BB = Dest->begin(), BE = Dest->end(); BB != BE; ++BB)
-    for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
+    for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I) {
+      // Remap operands.
       for (Instruction::op_iterator OI = I->op_begin(), OE = I->op_end();
            OI != OE; ++OI)
         if (!isa<Instruction>(*OI) && !isa<BasicBlock>(*OI))
-          *OI = RemapOperand(*OI, ValueMap, Dest->getContext());
+          *OI = MapValue(*OI, ValueMap, true);
+
+      // Remap attached metadata.
+      SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+      I->getAllMetadata(MDs);
+      for (SmallVectorImpl<std::pair<unsigned, MDNode *> >::iterator
+           MI = MDs.begin(), ME = MDs.end(); MI != ME; ++MI) {
+        Value *Old = MI->second;
+        if (!isa<Instruction>(Old) && !isa<BasicBlock>(Old)) {
+          Value *New = MapValue(Old, ValueMap, true);
+          if (New != Old) 
+            I->setMetadata(MI->first, cast<MDNode>(New));
+        }
+      }
+    }
 
   // There is no need to map the arguments anymore.
   for (Function::arg_iterator I = Src->arg_begin(), E = Src->arg_end();
@@ -1106,7 +1035,7 @@ static bool LinkFunctionBody(Function *Dest, Function *Src,
 // source module into the DestModule.  This consists basically of copying the
 // function over and fixing up references to values.
 static bool LinkFunctionBodies(Module *Dest, Module *Src,
-                               std::map<const Value*, Value*> &ValueMap,
+                               ValueToValueMapTy &ValueMap,
                                std::string *Err) {
 
   // Loop over all of the functions in the src module, mapping them over as we
@@ -1234,9 +1163,15 @@ static bool LinkAppendingVars(Module *M,
 static bool ResolveAliases(Module *Dest) {
   for (Module::alias_iterator I = Dest->alias_begin(), E = Dest->alias_end();
        I != E; ++I)
-    if (const GlobalValue *GV = I->resolveAliasedGlobal())
-      if (GV != I && !GV->isDeclaration())
-        I->replaceAllUsesWith(const_cast<GlobalValue*>(GV));
+    // We can't sue resolveGlobalAlias here because we need to preserve
+    // bitcasts and GEPs.
+    if (const Constant *C = I->getAliasee()) {
+      while (dyn_cast<GlobalAlias>(C))
+        C = cast<GlobalAlias>(C)->getAliasee();
+      const GlobalValue *GV = dyn_cast<GlobalValue>(C);
+      if (C != I && !(GV && GV->isDeclaration()))
+        I->replaceAllUsesWith(const_cast<Constant*>(C));
+    }
 
   return false;
 }
@@ -1280,10 +1215,10 @@ Linker::LinkModules(Module *Dest, Module *Src, std::string *ErrorMsg) {
 
   if (!Src->getDataLayout().empty() && !Dest->getDataLayout().empty() &&
       Src->getDataLayout() != Dest->getDataLayout())
-    cerr << "WARNING: Linking two modules of different data layouts!\n";
+    errs() << "WARNING: Linking two modules of different data layouts!\n";
   if (!Src->getTargetTriple().empty() &&
       Dest->getTargetTriple() != Src->getTargetTriple())
-    cerr << "WARNING: Linking two modules of different target triples!\n";
+    errs() << "WARNING: Linking two modules of different target triples!\n";
 
   // Append the module inline asm string.
   if (!Src->getModuleInlineAsm().empty()) {
@@ -1308,8 +1243,10 @@ Linker::LinkModules(Module *Dest, Module *Src, std::string *ErrorMsg) {
     return true;
 
   // ValueMap - Mapping of values from what they used to be in Src, to what they
-  // are now in Dest.
-  std::map<const Value*, Value*> ValueMap;
+  // are now in Dest.  ValueToValueMapTy is a ValueMap, which involves some
+  // overhead due to the use of Value handles which the Linker doesn't actually
+  // need, but this allows us to reuse the ValueMapper code.
+  ValueToValueMapTy ValueMap;
 
   // AppendingVars - Keep track of global variables in the destination module
   // with appending linkage.  After the module is linked together, they are
@@ -1322,9 +1259,6 @@ Linker::LinkModules(Module *Dest, Module *Src, std::string *ErrorMsg) {
     if (I->hasAppendingLinkage())
       AppendingVars.insert(std::make_pair(I->getName(), I));
   }
-
-  // Insert all of the named mdnoes in Src into the Dest module.
-  LinkNamedMDNodes(Dest, Src);
 
   // Insert all of the globals in src into the Dest module... without linking
   // initializers (which could refer to functions not yet mapped over).
@@ -1358,6 +1292,11 @@ Linker::LinkModules(Module *Dest, Module *Src, std::string *ErrorMsg) {
 
   // Resolve all uses of aliases with aliasees
   if (ResolveAliases(Dest)) return true;
+
+  // Remap all of the named mdnoes in Src into the Dest module. We do this
+  // after linking GlobalValues so that MDNodes that reference GlobalValues
+  // are properly remapped.
+  LinkNamedMDNodes(Dest, Src, ValueMap);
 
   // If the source library's module id is in the dependent library list of the
   // destination library, remove it since that module is now linked in.

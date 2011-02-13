@@ -19,7 +19,7 @@
 #include "PPCJITInfo.h"
 #include "PPCInstrInfo.h"
 #include "PPCISelLowering.h"
-#include "PPCMachOWriterInfo.h"
+#include "PPCSelectionDAGInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetData.h"
 
@@ -36,8 +36,8 @@ class PPCTargetMachine : public LLVMTargetMachine {
   PPCFrameInfo        FrameInfo;
   PPCJITInfo          JITInfo;
   PPCTargetLowering   TLInfo;
+  PPCSelectionDAGInfo TSInfo;
   InstrItineraryData  InstrItins;
-  PPCMachOWriterInfo  MachOWriterInfo;
 
 public:
   PPCTargetMachine(const Target &T, const std::string &TT,
@@ -46,8 +46,11 @@ public:
   virtual const PPCInstrInfo     *getInstrInfo() const { return &InstrInfo; }
   virtual const PPCFrameInfo     *getFrameInfo() const { return &FrameInfo; }
   virtual       PPCJITInfo       *getJITInfo()         { return &JITInfo; }
-  virtual       PPCTargetLowering *getTargetLowering() const { 
-   return const_cast<PPCTargetLowering*>(&TLInfo); 
+  virtual const PPCTargetLowering *getTargetLowering() const { 
+   return &TLInfo;
+  }
+  virtual const PPCSelectionDAGInfo* getSelectionDAGInfo() const {
+    return &TSInfo;
   }
   virtual const PPCRegisterInfo  *getRegisterInfo() const {
     return &InstrInfo.getRegisterInfo();
@@ -58,28 +61,12 @@ public:
   virtual const InstrItineraryData getInstrItineraryData() const {  
     return InstrItins;
   }
-  virtual const PPCMachOWriterInfo *getMachOWriterInfo() const {
-    return &MachOWriterInfo;
-  }
 
   // Pass Pipeline Configuration
   virtual bool addInstSelector(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addPreEmitPass(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
-                              MachineCodeEmitter &MCE);
-  virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
                               JITCodeEmitter &JCE);
-  virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
-                              ObjectCodeEmitter &OCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    MachineCodeEmitter &MCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    JITCodeEmitter &JCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    ObjectCodeEmitter &OCE);
   virtual bool getEnableTailMergeDefault() const;
 };
 

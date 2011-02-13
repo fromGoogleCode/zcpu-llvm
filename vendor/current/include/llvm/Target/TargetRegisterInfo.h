@@ -28,6 +28,7 @@ class BitVector;
 class MachineFunction;
 class MachineMove;
 class RegScavenger;
+template<class T> class SmallVectorImpl;
 
 /// TargetRegisterDesc - This record contains all of the information known about
 /// a particular register.  The AliasSet field (if not null) contains a pointer
@@ -41,7 +42,6 @@ class RegScavenger;
 /// of AX.
 ///
 struct TargetRegisterDesc {
-  const char     *AsmName;      // Assembly language name for the register
   const char     *Name;         // Printable name for the reg (for debugging)
   const unsigned *AliasSet;     // Register Alias Set, described above
   const unsigned *SubRegs;      // Sub-register set, described above
@@ -84,7 +84,7 @@ public:
         RegSet.insert(*I);
     }
   virtual ~TargetRegisterClass() {}     // Allow subclasses
-  
+
   /// getID() - Return the register class ID number.
   ///
   unsigned getID() const { return ID; }
@@ -110,9 +110,14 @@ public:
   }
 
   /// contains - Return true if the specified register is included in this
-  /// register class.
+  /// register class.  This does not include virtual registers.
   bool contains(unsigned Reg) const {
     return RegSet.count(Reg);
+  }
+
+  /// contains - Return true if both registers are in this class.
+  bool contains(unsigned Reg1, unsigned Reg2) const {
+    return contains(Reg1) && contains(Reg2);
   }
 
   /// hasType - return true if this TargetRegisterClass has the ValueType vt.
@@ -123,7 +128,7 @@ public:
         return true;
     return false;
   }
-  
+
   /// vt_begin / vt_end - Loop over all of the value types that can be
   /// represented by values in this register class.
   vt_iterator vt_begin() const {
@@ -152,9 +157,6 @@ public:
   /// index SubIdx, or NULL if no such class exists.
   const TargetRegisterClass* getSubRegisterRegClass(unsigned SubIdx) const {
     assert(SubIdx>0 && "Invalid subregister index");
-    for (unsigned s = 0; s != SubIdx-1; ++s)
-      if (!SubRegClasses[s])
-        return NULL;
     return SubRegClasses[SubIdx-1];
   }
 
@@ -170,10 +172,10 @@ public:
     return I;
   }
 
-  /// hasSubClass - return true if the the specified TargetRegisterClass
+  /// hasSubClass - return true if the specified TargetRegisterClass
   /// is a proper subset of this TargetRegisterClass.
   bool hasSubClass(const TargetRegisterClass *cs) const {
-    for (int i = 0; SubClasses[i] != NULL; ++i) 
+    for (int i = 0; SubClasses[i] != NULL; ++i)
       if (SubClasses[i] == cs)
         return true;
     return false;
@@ -184,17 +186,17 @@ public:
   sc_iterator subclasses_begin() const {
     return SubClasses;
   }
-  
+
   sc_iterator subclasses_end() const {
     sc_iterator I = SubClasses;
     while (*I != NULL) ++I;
     return I;
   }
-  
+
   /// hasSuperClass - return true if the specified TargetRegisterClass is a
   /// proper superset of this TargetRegisterClass.
   bool hasSuperClass(const TargetRegisterClass *cs) const {
-    for (int i = 0; SuperClasses[i] != NULL; ++i) 
+    for (int i = 0; SuperClasses[i] != NULL; ++i)
       if (SuperClasses[i] == cs)
         return true;
     return false;
@@ -205,7 +207,7 @@ public:
   sc_iterator superclasses_begin() const {
     return SuperClasses;
   }
-  
+
   sc_iterator superclasses_end() const {
     sc_iterator I = SuperClasses;
     while (*I != NULL) ++I;
@@ -217,7 +219,7 @@ public:
   bool isASubClass() const {
     return SuperClasses[0] != 0;
   }
-  
+
   /// allocation_order_begin/end - These methods define a range of registers
   /// which specify the registers in this class that are valid to register
   /// allocate, and the preferred order to allocate them in.  For example,
@@ -263,29 +265,28 @@ class TargetRegisterInfo {
 protected:
   const unsigned* SubregHash;
   const unsigned SubregHashSize;
-  const unsigned* SuperregHash;
-  const unsigned SuperregHashSize;
   const unsigned* AliasesHash;
   const unsigned AliasesHashSize;
 public:
   typedef const TargetRegisterClass * const * regclass_iterator;
 private:
   const TargetRegisterDesc *Desc;             // Pointer to the descriptor array
+  const char *const *SubRegIndexNames;        // Names of subreg indexes.
   unsigned NumRegs;                           // Number of entries in the array
 
   regclass_iterator RegClassBegin, RegClassEnd;   // List of regclasses
 
   int CallFrameSetupOpcode, CallFrameDestroyOpcode;
+
 protected:
   TargetRegisterInfo(const TargetRegisterDesc *D, unsigned NR,
                      regclass_iterator RegClassBegin,
                      regclass_iterator RegClassEnd,
+                     const char *const *subregindexnames,
                      int CallFrameSetupOpcode = -1,
                      int CallFrameDestroyOpcode = -1,
                      const unsigned* subregs = 0,
                      const unsigned subregsize = 0,
-                     const unsigned* superregs = 0,
-                     const unsigned superregsize = 0,
                      const unsigned* aliases = 0,
                      const unsigned aliasessize = 0);
   virtual ~TargetRegisterInfo();
@@ -299,8 +300,8 @@ public:
     /// FirstVirtualRegister - This is the first register number that is
     /// considered to be a 'virtual' register, which is part of the SSA
     /// namespace.  This must be the same for all targets, which means that each
-    /// target is limited to 1024 registers.
-    FirstVirtualRegister = 1024
+    /// target is limited to this fixed number of registers.
+    FirstVirtualRegister = 16384
   };
 
   /// isPhysicalRegister - Return true if the specified register number is in
@@ -317,16 +318,16 @@ public:
     return Reg >= FirstVirtualRegister;
   }
 
-  /// getPhysicalRegisterRegClass - Returns the Register Class of a physical
-  /// register of the given type. If type is EVT::Other, then just return any
-  /// register class the register belongs to.
-  virtual const TargetRegisterClass *
-    getPhysicalRegisterRegClass(unsigned Reg, EVT VT = MVT::Other) const;
+  /// getMinimalPhysRegClass - Returns the Register Class of a physical
+  /// register of the given type, picking the most sub register class of
+  /// the right type that contains this physreg.
+  const TargetRegisterClass *
+    getMinimalPhysRegClass(unsigned Reg, EVT VT = MVT::Other) const;
 
   /// getAllocatableSet - Returns a bitset indexed by register number
   /// indicating if a register is allocatable or not. If a register class is
   /// specified, returns the subset for the class.
-  BitVector getAllocatableSet(MachineFunction &MF,
+  BitVector getAllocatableSet(const MachineFunction &MF,
                               const TargetRegisterClass *RC = NULL) const;
 
   const TargetRegisterDesc &operator[](unsigned RegNo) const {
@@ -368,12 +369,6 @@ public:
     return get(RegNo).SuperRegs;
   }
 
-  /// getAsmName - Return the symbolic target-specific name for the
-  /// specified physical register.
-  const char *getAsmName(unsigned RegNo) const {
-    return get(RegNo).AsmName;
-  }
-
   /// getName - Return the human-readable symbolic target-specific name for the
   /// specified physical register.
   const char *getName(unsigned RegNo) const {
@@ -384,6 +379,13 @@ public:
   /// sizing arrays holding per register information)
   unsigned getNumRegs() const {
     return NumRegs;
+  }
+
+  /// getSubRegIndexName - Return the human-readable symbolic target-specific
+  /// name for the specified SubRegIndex.
+  const char *getSubRegIndexName(unsigned SubIdx) const {
+    assert(SubIdx && "This is not a subregister index");
+    return SubRegIndexNames[SubIdx-1];
   }
 
   /// regsOverlap - Returns true if the two registers are equal or alias each
@@ -420,30 +422,18 @@ public:
            SubregHash[index*2+1] != 0) {
       if (SubregHash[index*2] == regA && SubregHash[index*2+1] == regB)
         return true;
-      
+
       index = (index + ProbeAmt) & (SubregHashSize-1);
       ProbeAmt += 2;
     }
-    
+
     return false;
   }
 
   /// isSuperRegister - Returns true if regB is a super-register of regA.
   ///
   bool isSuperRegister(unsigned regA, unsigned regB) const {
-    // SuperregHash is a simple quadratically probed hash table.
-    size_t index = (regA + regB * 37) & (SuperregHashSize-1);
-    unsigned ProbeAmt = 2;
-    while (SuperregHash[index*2] != 0 &&
-           SuperregHash[index*2+1] != 0) {
-      if (SuperregHash[index*2] == regA && SuperregHash[index*2+1] == regB)
-        return true;
-      
-      index = (index + ProbeAmt) & (SuperregHashSize-1);
-      ProbeAmt += 2;
-    }
-    
-    return false;
+    return isSubRegister(regB, regA);
   }
 
   /// getCalleeSavedRegs - Return a null-terminated list of all of the
@@ -453,11 +443,6 @@ public:
   virtual const unsigned* getCalleeSavedRegs(const MachineFunction *MF = 0)
                                                                       const = 0;
 
-  /// getCalleeSavedRegClasses - Return a null-terminated list of the preferred
-  /// register classes to spill each callee saved register with.  The order and
-  /// length of this list match the getCalleeSaveRegs() list.
-  virtual const TargetRegisterClass* const *getCalleeSavedRegClasses(
-                                            const MachineFunction *MF) const =0;
 
   /// getReservedRegs - Returns a bitset indexed by physical register number
   /// indicating if a register is a special register that has particular uses
@@ -470,13 +455,30 @@ public:
   /// exist.
   virtual unsigned getSubReg(unsigned RegNo, unsigned Index) const = 0;
 
+  /// getSubRegIndex - For a given register pair, return the sub-register index
+  /// if the second register is a sub-register of the first. Return zero
+  /// otherwise.
+  virtual unsigned getSubRegIndex(unsigned RegNo, unsigned SubRegNo) const = 0;
+
   /// getMatchingSuperReg - Return a super-register of the specified register
   /// Reg so its sub-register of index SubIdx is Reg.
-  unsigned getMatchingSuperReg(unsigned Reg, unsigned SubIdx, 
+  unsigned getMatchingSuperReg(unsigned Reg, unsigned SubIdx,
                                const TargetRegisterClass *RC) const {
     for (const unsigned *SRs = getSuperRegisters(Reg); unsigned SR = *SRs;++SRs)
       if (Reg == getSubReg(SR, SubIdx) && RC->contains(SR))
         return SR;
+    return 0;
+  }
+
+  /// canCombineSubRegIndices - Given a register class and a list of
+  /// subregister indices, return true if it's possible to combine the
+  /// subregister indices into one that corresponds to a larger
+  /// subregister. Return the new subregister index by reference. Note the
+  /// new index may be zero if the given subregisters can be combined to
+  /// form the whole register.
+  virtual bool canCombineSubRegIndices(const TargetRegisterClass *RC,
+                                       SmallVectorImpl<unsigned> &SubIndices,
+                                       unsigned &NewSubIdx) const {
     return 0;
   }
 
@@ -487,6 +489,23 @@ public:
   getMatchingSuperRegClass(const TargetRegisterClass *A,
                            const TargetRegisterClass *B, unsigned Idx) const {
     return 0;
+  }
+
+  /// composeSubRegIndices - Return the subregister index you get from composing
+  /// two subregister indices.
+  ///
+  /// If R:a:b is the same register as R:c, then composeSubRegIndices(a, b)
+  /// returns c. Note that composeSubRegIndices does not tell you about illegal
+  /// compositions. If R does not have a subreg a, or R:a does not have a subreg
+  /// b, composeSubRegIndices doesn't tell you.
+  ///
+  /// The ARM register Q0 has two D subregs dsub_0:D0 and dsub_1:D1. It also has
+  /// ssub_0:S0 - ssub_3:S3 subregs.
+  /// If you compose subreg indices dsub_1, ssub_0 you get ssub_2.
+  ///
+  virtual unsigned composeSubRegIndices(unsigned a, unsigned b) const {
+    // This default implementation is correct for most targets.
+    return b;
   }
 
   //===--------------------------------------------------------------------===//
@@ -501,12 +520,12 @@ public:
   unsigned getNumRegClasses() const {
     return (unsigned)(regclass_end()-regclass_begin());
   }
-  
+
   /// getRegClass - Returns the register class associated with the enumeration
   /// value.  See class TargetOperandInfo.
   const TargetRegisterClass *getRegClass(unsigned i) const {
-    assert(i <= getNumRegClasses() && "Register Class ID out of range");
-    return i ? RegClassBegin[i - 1] : NULL;
+    assert(i < getNumRegClasses() && "Register Class ID out of range");
+    return RegClassBegin[i];
   }
 
   /// getPointerRegClass - Returns a TargetRegisterClass used for pointer
@@ -567,7 +586,20 @@ public:
   virtual bool requiresRegisterScavenging(const MachineFunction &MF) const {
     return false;
   }
-  
+
+  /// requiresFrameIndexScavenging - returns true if the target requires post
+  /// PEI scavenging of registers for materializing frame index constants.
+  virtual bool requiresFrameIndexScavenging(const MachineFunction &MF) const {
+    return false;
+  }
+
+  /// requiresVirtualBaseRegisters - Returns true if the target wants the
+  /// LocalStackAllocation pass to be run and virtual base registers
+  /// used for more efficient stack access.
+  virtual bool requiresVirtualBaseRegisters(const MachineFunction &MF) const {
+    return false;
+  }
+
   /// hasFP - Return true if the specified function should have a dedicated
   /// frame pointer register. For most targets this is true only if the function
   /// has variable sized allocas or if frame pointer elimination is disabled.
@@ -578,8 +610,19 @@ public:
   /// immediately on entry to the current function. This eliminates the need for
   /// add/sub sp brackets around call sites. Returns true if the call frame is
   /// included as part of the stack frame.
-  virtual bool hasReservedCallFrame(MachineFunction &MF) const {
+  virtual bool hasReservedCallFrame(const MachineFunction &MF) const {
     return !hasFP(MF);
+  }
+
+  /// canSimplifyCallFramePseudos - When possible, it's best to simplify the
+  /// call frame pseudo ops before doing frame index elimination. This is
+  /// possible only when frame index references between the pseudos won't
+  /// need adjusting for the call frame adjustments. Normally, that's true
+  /// if the function has a reserved call frame or a frame pointer. Some
+  /// targets (Thumb2, for example) may have more complicated criteria,
+  /// however, and can override this behavior.
+  virtual bool canSimplifyCallFramePseudos(const MachineFunction &MF) const {
+    return hasReservedCallFrame(MF) || hasFP(MF);
   }
 
   /// hasReservedSpillSlot - Return true if target has reserved a spill slot in
@@ -588,7 +631,7 @@ public:
   /// reserved as its spill slot. This tells PEI not to create a new stack frame
   /// object for the given register. It should be called only after
   /// processFunctionBeforeCalleeSavedScan().
-  virtual bool hasReservedSpillSlot(MachineFunction &MF, unsigned Reg,
+  virtual bool hasReservedSpillSlot(const MachineFunction &MF, unsigned Reg,
                                     int &FrameIdx) const {
     return false;
   }
@@ -598,6 +641,44 @@ public:
   /// for.
   virtual bool needsStackRealignment(const MachineFunction &MF) const {
     return false;
+  }
+
+  /// getFrameIndexInstrOffset - Get the offset from the referenced frame
+  /// index in the instruction, if the is one.
+  virtual int64_t getFrameIndexInstrOffset(const MachineInstr *MI,
+                                           int Idx) const {
+    return 0;
+  }
+
+  /// needsFrameBaseReg - Returns true if the instruction's frame index
+  /// reference would be better served by a base register other than FP
+  /// or SP. Used by LocalStackFrameAllocation to determine which frame index
+  /// references it should create new base registers for.
+  virtual bool needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
+    return false;
+  }
+
+  /// materializeFrameBaseRegister - Insert defining instruction(s) for
+  /// BaseReg to be a pointer to FrameIdx before insertion point I.
+  virtual void materializeFrameBaseRegister(MachineBasicBlock::iterator I,
+                                            unsigned BaseReg, int FrameIdx,
+                                            int64_t Offset) const {
+    assert(0 && "materializeFrameBaseRegister does not exist on this target");
+  }
+
+  /// resolveFrameIndex - Resolve a frame index operand of an instruction
+  /// to reference the indicated base register plus offset instead.
+  virtual void resolveFrameIndex(MachineBasicBlock::iterator I,
+                                 unsigned BaseReg, int64_t Offset) const {
+    assert(0 && "resolveFrameIndex does not exist on this target");
+  }
+
+  /// isFrameOffsetLegal - Determine whether a given offset immediate is
+  /// encodable to resolve a frame index.
+  virtual bool isFrameOffsetLegal(const MachineInstr *MI,
+                                  int64_t Offset) const {
+    assert(0 && "isFrameOffsetLegal does not exist on this target");
+    return false; // Must return a value in order to compile with VS 2005
   }
 
   /// getCallFrameSetup/DestroyOpcode - These methods return the opcode of the
@@ -635,18 +716,31 @@ public:
   }
 
   /// processFunctionBeforeFrameFinalized - This method is called immediately
-  /// before the specified functions frame layout (MF.getFrameInfo()) is
+  /// before the specified function's frame layout (MF.getFrameInfo()) is
   /// finalized.  Once the frame is finalized, MO_FrameIndex operands are
   /// replaced with direct constants.  This method is optional.
   ///
   virtual void processFunctionBeforeFrameFinalized(MachineFunction &MF) const {
   }
 
+  /// saveScavengerRegister - Spill the register so it can be used by the
+  /// register scavenger. Return true if the register was spilled, false
+  /// otherwise. If this function does not spill the register, the scavenger
+  /// will instead spill it to the emergency spill slot.
+  ///
+  virtual bool saveScavengerRegister(MachineBasicBlock &MBB,
+                                     MachineBasicBlock::iterator I,
+                                     MachineBasicBlock::iterator &UseMI,
+                                     const TargetRegisterClass *RC,
+                                     unsigned Reg) const {
+    return false;
+  }
+
   /// eliminateFrameIndex - This method must be overriden to eliminate abstract
   /// frame indices from instructions which may use them.  The instruction
   /// referenced by the iterator contains an MO_FrameIndex operand which must be
   /// eliminated by this method.  This method may modify or replace the
-  /// specified instruction, as long as it keeps the iterator pointing the the
+  /// specified instruction, as long as it keeps the iterator pointing at the
   /// finished product. SPAdj is the SP adjustment due to call frame setup
   /// instruction.
   virtual void eliminateFrameIndex(MachineBasicBlock::iterator MI,
@@ -657,10 +751,10 @@ public:
   virtual void emitPrologue(MachineFunction &MF) const = 0;
   virtual void emitEpilogue(MachineFunction &MF,
                             MachineBasicBlock &MBB) const = 0;
-                            
+
   //===--------------------------------------------------------------------===//
   /// Debug information queries.
-  
+
   /// getDwarfRegNum - Map a target register to an equivalent dwarf register
   /// number.  Returns -1 if there is no equivalent value.  The second
   /// parameter allows targets to use different numberings for EH info and
@@ -669,16 +763,28 @@ public:
 
   /// getFrameRegister - This method should return the register used as a base
   /// for values allocated in the current stack frame.
-  virtual unsigned getFrameRegister(MachineFunction &MF) const = 0;
+  virtual unsigned getFrameRegister(const MachineFunction &MF) const = 0;
 
   /// getFrameIndexOffset - Returns the displacement from the frame register to
   /// the stack frame of the specified index.
-  virtual int getFrameIndexOffset(MachineFunction &MF, int FI) const;
-                           
+  virtual int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
+
+  /// getFrameIndexReference - This method should return the base register
+  /// and offset used to reference a frame index location. The offset is
+  /// returned directly, and the base register is returned via FrameReg.
+  virtual int getFrameIndexReference(const MachineFunction &MF, int FI,
+                                     unsigned &FrameReg) const {
+    // By default, assume all frame indices are referenced via whatever
+    // getFrameRegister() says. The target can override this if it's doing
+    // something different.
+    FrameReg = getFrameRegister(MF);
+    return getFrameIndexOffset(MF, FI);
+  }
+
   /// getRARegister - This method should return the register where the return
   /// address can be found.
   virtual unsigned getRARegister() const = 0;
-  
+
   /// getInitialFrameState - Returns a list of machine moves that are assumed
   /// on entry to all functions.  Note that LabelID is ignored (assumed to be
   /// the beginning of the function.)
@@ -687,7 +793,7 @@ public:
 
 
 // This is useful when building IndexedMaps keyed on virtual registers
-struct VirtReg2IndexFunctor : std::unary_function<unsigned, unsigned> {
+struct VirtReg2IndexFunctor : public std::unary_function<unsigned, unsigned> {
   unsigned operator()(unsigned Reg) const {
     return Reg - TargetRegisterInfo::FirstVirtualRegister;
   }

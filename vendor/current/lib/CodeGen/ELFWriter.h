@@ -28,16 +28,18 @@ namespace llvm {
   class ELFSection;
   struct ELFSym;
   class GlobalVariable;
+  class JITDebugRegisterer;
   class Mangler;
   class MachineCodeEmitter;
   class MachineConstantPoolEntry;
   class ObjectCodeEmitter;
-  class TargetAsmInfo;
+  class MCAsmInfo;
   class TargetELFWriterInfo;
   class TargetLoweringObjectFile;
   class raw_ostream;
   class SectionKind;
   class MCContext;
+  class TargetMachine;
 
   typedef std::vector<ELFSym*>::iterator ELFSymIter;
   typedef std::vector<ELFSection*>::iterator ELFSectionIter;
@@ -51,6 +53,7 @@ namespace llvm {
   ///
   class ELFWriter : public MachineFunctionPass {
     friend class ELFCodeEmitter;
+    friend class JITDebugRegisterer;
   public:
     static char ID;
 
@@ -86,9 +89,9 @@ namespace llvm {
     /// and other object file specific stuff
     const TargetLoweringObjectFile &TLOF;
 
-    /// TAI - Target Asm Info, provide information about section names for
+    /// MAI - Target Asm Info, provide information about section names for
     /// globals and other target specific stuff.
-    const TargetAsmInfo *TAI;
+    const MCAsmInfo *MAI;
 
     //===------------------------------------------------------------------===//
     // Properties inferred automatically from the target machine.
@@ -118,7 +121,7 @@ namespace llvm {
     unsigned NumSections;   // Always = SectionList.size()
 
     /// SectionLookup - This is a mapping from section name to section number in
-    /// the SectionList. Used to quickly gather the Section Index from TAI names
+    /// the SectionList. Used to quickly gather the Section Index from MAI names
     std::map<std::string, ELFSection*> SectionLookup;
 
     /// PendingGlobals - Globals not processed as symbols yet.
@@ -158,29 +161,29 @@ namespace llvm {
       SN->SectionIdx = NumSections++;
       SN->Type = Type;
       SN->Flags = Flags;
-      SN->Link = ELFSection::SHN_UNDEF;
+      SN->Link = ELF::SHN_UNDEF;
       SN->Align = Align;
       return *SN;
     }
 
     ELFSection &getNonExecStackSection() {
-      return getSection(".note.GNU-stack", ELFSection::SHT_PROGBITS, 0, 1);
+      return getSection(".note.GNU-stack", ELF::SHT_PROGBITS, 0, 1);
     }
 
     ELFSection &getSymbolTableSection() {
-      return getSection(".symtab", ELFSection::SHT_SYMTAB, 0);
+      return getSection(".symtab", ELF::SHT_SYMTAB, 0);
     }
 
     ELFSection &getStringTableSection() {
-      return getSection(".strtab", ELFSection::SHT_STRTAB, 0, 1);
+      return getSection(".strtab", ELF::SHT_STRTAB, 0, 1);
     }
 
     ELFSection &getSectionHeaderStringTableSection() {
-      return getSection(".shstrtab", ELFSection::SHT_STRTAB, 0, 1);
+      return getSection(".shstrtab", ELF::SHT_STRTAB, 0, 1);
     }
 
     ELFSection &getNullSection() {
-      return getSection("", ELFSection::SHT_NULL, 0);
+      return getSection("", ELF::SHT_NULL, 0);
     }
 
     ELFSection &getDataSection();
@@ -189,7 +192,7 @@ namespace llvm {
     ELFSection &getDtorSection();
     ELFSection &getJumpTableSection();
     ELFSection &getConstantPoolSection(MachineConstantPoolEntry &CPE);
-    ELFSection &getTextSection(Function *F);
+    ELFSection &getTextSection(const Function *F);
     ELFSection &getRelocSection(ELFSection &S);
 
     // Helpers for obtaining ELF specific info.

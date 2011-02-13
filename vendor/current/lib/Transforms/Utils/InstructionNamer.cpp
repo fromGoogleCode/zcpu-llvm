@@ -23,7 +23,7 @@ using namespace llvm;
 namespace {
   struct InstNamer : public FunctionPass {
     static char ID; // Pass identification, replacement for typeid
-    InstNamer() : FunctionPass(&ID) {}
+    InstNamer() : FunctionPass(ID) {}
     
     void getAnalysisUsage(AnalysisUsage &Info) const {
       Info.setPreservesAll();
@@ -32,15 +32,15 @@ namespace {
     bool runOnFunction(Function &F) {
       for (Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end();
            AI != AE; ++AI)
-        if (!AI->hasName() && AI->getType() != Type::getVoidTy(F.getContext()))
-          AI->setName("tmp");
+        if (!AI->hasName() && !AI->getType()->isVoidTy())
+          AI->setName("arg");
 
       for (Function::iterator BB = F.begin(), E = F.end(); BB != E; ++BB) {
         if (!BB->hasName())
-          BB->setName("BB");
+          BB->setName("bb");
         
         for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
-          if (!I->hasName() && I->getType() != Type::getVoidTy(F.getContext()))
+          if (!I->hasName() && !I->getType()->isVoidTy())
             I->setName("tmp");
       }
       return true;
@@ -48,12 +48,12 @@ namespace {
   };
   
   char InstNamer::ID = 0;
-  static RegisterPass<InstNamer> X("instnamer",
-                                   "Assign names to anonymous instructions");
+  INITIALIZE_PASS(InstNamer, "instnamer", 
+                  "Assign names to anonymous instructions", false, false);
 }
 
 
-const PassInfo *const llvm::InstructionNamerID = &X;
+char &llvm::InstructionNamerID = InstNamer::ID;
 //===----------------------------------------------------------------------===//
 //
 // InstructionNamer - Give any unnamed non-void instructions "tmp" names.

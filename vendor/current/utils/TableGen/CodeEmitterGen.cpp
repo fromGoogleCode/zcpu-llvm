@@ -24,17 +24,8 @@ void CodeEmitterGen::reverseBits(std::vector<Record*> &Insts) {
   for (std::vector<Record*>::iterator I = Insts.begin(), E = Insts.end();
        I != E; ++I) {
     Record *R = *I;
-    if (R->getName() == "PHI" ||
-        R->getName() == "INLINEASM" ||
-        R->getName() == "DBG_LABEL" ||
-        R->getName() == "EH_LABEL" ||
-        R->getName() == "GC_LABEL" ||
-        R->getName() == "DECLARE" ||
-        R->getName() == "EXTRACT_SUBREG" ||
-        R->getName() == "INSERT_SUBREG" ||
-        R->getName() == "IMPLICIT_DEF" ||
-        R->getName() == "SUBREG_TO_REG" ||
-        R->getName() == "COPY_TO_REGCLASS") continue;
+    if (R->getValueAsString("Namespace") == "TargetOpcode")
+      continue;
 
     BitsInit *BI = R->getValueAsBitsInit("Inst");
 
@@ -85,8 +76,8 @@ void CodeEmitterGen::run(raw_ostream &o) {
   EmitSourceFileHeader("Machine Code Emitter", o);
   std::string Namespace = Insts[0]->getValueAsString("Namespace") + "::";
   
-  std::vector<const CodeGenInstruction*> NumberedInstructions;
-  Target.getInstructionsByEnumValue(NumberedInstructions);
+  const std::vector<const CodeGenInstruction*> &NumberedInstructions =
+    Target.getInstructionsByEnumValue();
 
   // Emit function declaration
   o << "unsigned " << Target.getName() << "CodeEmitter::"
@@ -94,24 +85,14 @@ void CodeEmitterGen::run(raw_ostream &o) {
 
   // Emit instruction base values
   o << "  static const unsigned InstBits[] = {\n";
-  for (std::vector<const CodeGenInstruction*>::iterator
+  for (std::vector<const CodeGenInstruction*>::const_iterator
           IN = NumberedInstructions.begin(),
           EN = NumberedInstructions.end();
        IN != EN; ++IN) {
     const CodeGenInstruction *CGI = *IN;
     Record *R = CGI->TheDef;
     
-    if (R->getName() == "PHI" ||
-        R->getName() == "INLINEASM" ||
-        R->getName() == "DBG_LABEL" ||
-        R->getName() == "EH_LABEL" ||
-        R->getName() == "GC_LABEL" ||
-        R->getName() == "DECLARE" ||
-        R->getName() == "EXTRACT_SUBREG" ||
-        R->getName() == "INSERT_SUBREG" ||
-        R->getName() == "IMPLICIT_DEF" ||
-        R->getName() == "SUBREG_TO_REG" ||
-        R->getName() == "COPY_TO_REGCLASS") {
+    if (R->getValueAsString("Namespace") == "TargetOpcode") {
       o << "    0U,\n";
       continue;
     }
@@ -136,24 +117,14 @@ void CodeEmitterGen::run(raw_ostream &o) {
   for (std::vector<Record*>::iterator IC = Insts.begin(), EC = Insts.end();
         IC != EC; ++IC) {
     Record *R = *IC;
+    if (R->getValueAsString("Namespace") == "TargetOpcode")
+      continue;
     const std::string &InstName = R->getName();
     std::string Case("");
-    
-    if (InstName == "PHI" ||
-        InstName == "INLINEASM" ||
-        InstName == "DBG_LABEL"||
-        InstName == "EH_LABEL"||
-        InstName == "GC_LABEL"||
-        InstName == "DECLARE"||
-        InstName == "EXTRACT_SUBREG" ||
-        InstName == "INSERT_SUBREG" ||
-        InstName == "IMPLICIT_DEF" ||
-        InstName == "SUBREG_TO_REG" ||
-        InstName == "COPY_TO_REGCLASS") continue;
 
     BitsInit *BI = R->getValueAsBitsInit("Inst");
     const std::vector<RecordVal> &Vals = R->getValues();
-    CodeGenInstruction &CGI = Target.getInstruction(InstName);
+    CodeGenInstruction &CGI = Target.getInstruction(R);
     
     // Loop over all of the fields in the instruction, determining which are the
     // operands to the instruction.
@@ -246,7 +217,7 @@ void CodeEmitterGen::run(raw_ostream &o) {
     << "    std::string msg;\n"
     << "    raw_string_ostream Msg(msg);\n"
     << "    Msg << \"Not supported instr: \" << MI;\n"
-    << "    llvm_report_error(Msg.str());\n"
+    << "    report_fatal_error(Msg.str());\n"
     << "  }\n"
     << "  return Value;\n"
     << "}\n\n";

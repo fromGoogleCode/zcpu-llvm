@@ -130,6 +130,38 @@ namespace Mips {
   }
 }
 
+/// MipsII - This namespace holds all of the target specific flags that
+/// instruction info tracks.
+///
+namespace MipsII {
+  /// Target Operand Flag enum.
+  enum TOF {
+    //===------------------------------------------------------------------===//
+    // Mips Specific MachineOperand flags.
+ 
+    MO_NO_FLAG,
+
+    /// MO_GOT - Represents the offset into the global offset table at which
+    /// the address the relocation entry symbol resides during execution.
+    MO_GOT,
+
+    /// MO_GOT_CALL - Represents the offset into the global offset table at 
+    /// which the address of a call site relocation entry symbol resides 
+    /// during execution. This is different from the above since this flag
+    /// can only be present in call instructions.
+    MO_GOT_CALL,
+
+    /// MO_GPREL - Represents the offset from the current gp value to be used 
+    /// for the relocatable object file being produced.
+    MO_GPREL,
+
+    /// MO_ABS_HILO - Represents the hi or low part of an absolute symbol
+    /// address. 
+    MO_ABS_HILO
+
+  };
+}
+
 class MipsInstrInfo : public TargetInstrInfoImpl {
   MipsTargetMachine &TM;
   const MipsRegisterInfo RI;
@@ -142,12 +174,6 @@ public:
   ///
   virtual const MipsRegisterInfo &getRegisterInfo() const { return RI; }
 
-  /// Return true if the instruction is a register to register move and return
-  /// the source and dest operands and their sub-register indices by reference.
-  virtual bool isMoveInstr(const MachineInstr &MI,
-                           unsigned &SrcReg, unsigned &DstReg,
-                           unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
-  
   /// isLoadFromStackSlot - If the specified machine instruction is a direct
   /// load from a stack slot, return the virtual or physical register number of
   /// the destination along with the FrameIndex of the loaded stack slot.  If
@@ -172,35 +198,24 @@ public:
   virtual unsigned RemoveBranch(MachineBasicBlock &MBB) const;
   virtual unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                                 MachineBasicBlock *FBB,
-                            const SmallVectorImpl<MachineOperand> &Cond) const;
-  virtual bool copyRegToReg(MachineBasicBlock &MBB, 
-                            MachineBasicBlock::iterator I,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC) const;
+                                const SmallVectorImpl<MachineOperand> &Cond,
+                                DebugLoc DL) const;
+  virtual void copyPhysReg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MI, DebugLoc DL,
+                           unsigned DestReg, unsigned SrcReg,
+                           bool KillSrc) const;
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MBBI,
                                    unsigned SrcReg, bool isKill, int FrameIndex,
-                                   const TargetRegisterClass *RC) const;
+                                   const TargetRegisterClass *RC,
+                                   const TargetRegisterInfo *TRI) const;
 
   virtual void loadRegFromStackSlot(MachineBasicBlock &MBB,
                                     MachineBasicBlock::iterator MBBI,
                                     unsigned DestReg, int FrameIndex,
-                                    const TargetRegisterClass *RC) const;
+                                    const TargetRegisterClass *RC,
+                                    const TargetRegisterInfo *TRI) const;
 
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                           const SmallVectorImpl<unsigned> &Ops,
-                                              int FrameIndex) const;
-
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                           const SmallVectorImpl<unsigned> &Ops,
-                                              MachineInstr* LoadMI) const {
-    return 0;
-  }
-  
-  virtual bool BlockHasNoFallThrough(const MachineBasicBlock &MBB) const;
   virtual
   bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const;
 

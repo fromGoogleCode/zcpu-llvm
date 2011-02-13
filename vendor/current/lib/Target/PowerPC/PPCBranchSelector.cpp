@@ -10,7 +10,7 @@
 // This file contains a pass that scans a machine function to determine which
 // conditional branches need more than 16 bits of displacement to reach their
 // target basic block.  It does this in two passes; a calculation of basic block
-// positions pass, and a branch psuedo op to machine branch opcode pass.  This
+// positions pass, and a branch pseudo op to machine branch opcode pass.  This
 // pass should be run last, just before the assembly printer.
 //
 //===----------------------------------------------------------------------===//
@@ -23,16 +23,15 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/MathExtras.h"
 using namespace llvm;
 
 STATISTIC(NumExpanded, "Number of branches expanded to long format");
 
 namespace {
-  struct VISIBILITY_HIDDEN PPCBSel : public MachineFunctionPass {
+  struct PPCBSel : public MachineFunctionPass {
     static char ID;
-    PPCBSel() : MachineFunctionPass(&ID) {}
+    PPCBSel() : MachineFunctionPass(ID) {}
 
     /// BlockSizes - The sizes of the basic blocks in the function.
     std::vector<unsigned> BlockSizes;
@@ -54,7 +53,8 @@ FunctionPass *llvm::createPPCBranchSelectionPass() {
 }
 
 bool PPCBSel::runOnMachineFunction(MachineFunction &Fn) {
-  const TargetInstrInfo *TII = Fn.getTarget().getInstrInfo();
+  const PPCInstrInfo *TII =
+                static_cast<const PPCInstrInfo*>(Fn.getTarget().getInstrInfo());
   // Give the blocks of the function a dense, in-order, numbering.
   Fn.RenumberBlocks();
   BlockSizes.resize(Fn.getNumBlockIDs());
@@ -131,7 +131,7 @@ bool PPCBSel::runOnMachineFunction(MachineFunction &Fn) {
         }
 
         // If this branch is in range, ignore it.
-        if (isInt16(BranchSize)) {
+        if (isInt<16>(BranchSize)) {
           MBBStartOffset += 4;
           continue;
         }

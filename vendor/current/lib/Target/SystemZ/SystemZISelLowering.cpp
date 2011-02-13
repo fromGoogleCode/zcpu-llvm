@@ -30,10 +30,12 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
+#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/Target/TargetOptions.h"
-#include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/VectorExtras.h"
 using namespace llvm;
 
@@ -52,11 +54,6 @@ SystemZTargetLowering::SystemZTargetLowering(SystemZTargetMachine &tm) :
   if (!UseSoftFloat) {
     addRegisterClass(MVT::f32, SystemZ::FP32RegisterClass);
     addRegisterClass(MVT::f64, SystemZ::FP64RegisterClass);
-
-    addLegalFPImmediate(APFloat(+0.0));  // lzer
-    addLegalFPImmediate(APFloat(+0.0f)); // lzdr
-    addLegalFPImmediate(APFloat(-0.0));  // lzer + lner
-    addLegalFPImmediate(APFloat(-0.0f)); // lzdr + lndr
   }
 
   // Compute derived properties from the register classes
@@ -79,7 +76,13 @@ SystemZTargetLowering::SystemZTargetLowering(SystemZTargetMachine &tm) :
   setLoadExtAction(ISD::EXTLOAD,  MVT::f64, Expand);
 
   setStackPointerRegisterToSaveRestore(SystemZ::R15D);
-  setSchedulingPreference(SchedulingForLatency);
+
+  // TODO: It may be better to default to latency-oriented scheduling, however
+  // LLVM's current latency-oriented scheduler can't handle physreg definitions
+  // such as SystemZ has with PSW, so set this to the register-pressure
+  // scheduler, because it can.
+  setSchedulingPreference(Sched::RegPressure);
+
   setBooleanContents(ZeroOrOneBooleanContent);
 
   setOperationAction(ISD::BR_JT,            MVT::Other, Expand);
@@ -155,7 +158,8 @@ SystemZTargetLowering::SystemZTargetLowering(SystemZTargetMachine &tm) :
   setTruncStoreAction(MVT::f64, MVT::f32, Expand);
 }
 
-SDValue SystemZTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) {
+SDValue SystemZTargetLowering::LowerOperation(SDValue Op,
+                                              SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
   case ISD::BR_CC:            return LowerBR_CC(Op, DAG);
   case ISD::SELECT_CC:        return LowerSELECT_CC(Op, DAG);
@@ -166,6 +170,17 @@ SDValue SystemZTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) {
     llvm_unreachable("Should not custom lower this!");
     return SDValue();
   }
+}
+
+bool SystemZTargetLowering::isFPImmLegal(const APFloat &Imm, EVT VT) const {
+  if (UseSoftFloat || (VT != MVT::f32 && VT != MVT::f64))
+    return false;
+
+  // +0.0  lzer
+  // +0.0f lzdr
+  // -0.0  lzer + lner
+  // -0.0f lzdr + lndr
+  return Imm.isZero() || Imm.isNegZero();
 }
 
 //===----------------------------------------------------------------------===//
@@ -216,13 +231,14 @@ getRegForInlineAsmConstraint(const std::string &Constraint,
 
 SDValue
 SystemZTargetLowering::LowerFormalArguments(SDValue Chain,
-                                            unsigned CallConv,
+                                            CallingConv::ID CallConv,
                                             bool isVarArg,
                                             const SmallVectorImpl<ISD::InputArg>
                                               &Ins,
                                             DebugLoc dl,
                                             SelectionDAG &DAG,
-                                            SmallVectorImpl<SDValue> &InVals) {
+                                            SmallVectorImpl<SDValue> &InVals)
+                                              const {
 
   switch (CallConv) {
   default:
@@ -235,12 +251,15 @@ SystemZTargetLowering::LowerFormalArguments(SDValue Chain,
 
 SDValue
 SystemZTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
-                                 unsigned CallConv, bool isVarArg,
-                                 bool isTailCall,
+                                 CallingConv::ID CallConv, bool isVarArg,
+                                 bool &isTailCall,
                                  const SmallVectorImpl<ISD::OutputArg> &Outs,
+                                 const SmallVectorImpl<SDValue> &OutVals,
                                  const SmallVectorImpl<ISD::InputArg> &Ins,
                                  DebugLoc dl, SelectionDAG &DAG,
-                                 SmallVectorImpl<SDValue> &InVals) {
+                                 SmallVectorImpl<SDValue> &InVals) const {
+  // SystemZ target does not yet support tail call optimization.
+  isTailCall = false;
 
   switch (CallConv) {
   default:
@@ -248,7 +267,7 @@ SystemZTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
   case CallingConv::Fast:
   case CallingConv::C:
     return LowerCCCCallTo(Chain, Callee, CallConv, isVarArg, isTailCall,
-                          Outs, Ins, dl, DAG, InVals);
+                          Outs, OutVals, Ins, dl, DAG, InVals);
   }
 }
 
@@ -258,13 +277,14 @@ SystemZTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
 // FIXME: varargs
 SDValue
 SystemZTargetLowering::LowerCCCArguments(SDValue Chain,
-                                         unsigned CallConv,
+                                         CallingConv::ID CallConv,
                                          bool isVarArg,
                                          const SmallVectorImpl<ISD::InputArg>
                                            &Ins,
                                          DebugLoc dl,
                                          SelectionDAG &DAG,
-                                         SmallVectorImpl<SDValue> &InVals) {
+                                         SmallVectorImpl<SDValue> &InVals)
+                                           const {
 
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
@@ -277,7 +297,7 @@ SystemZTargetLowering::LowerCCCArguments(SDValue Chain,
   CCInfo.AnalyzeFormalArguments(Ins, CC_SystemZ);
 
   if (isVarArg)
-    llvm_report_error("Varargs not supported yet");
+    report_fatal_error("Varargs not supported yet");
 
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
     SDValue ArgValue;
@@ -289,7 +309,7 @@ SystemZTargetLowering::LowerCCCArguments(SDValue Chain,
       switch (LocVT.getSimpleVT().SimpleTy) {
       default:
 #ifndef NDEBUG
-        cerr << "LowerFormalArguments Unhandled argument type: "
+        errs() << "LowerFormalArguments Unhandled argument type: "
              << LocVT.getSimpleVT().SimpleTy
              << "\n";
 #endif
@@ -315,13 +335,14 @@ SystemZTargetLowering::LowerCCCArguments(SDValue Chain,
       // Create the nodes corresponding to a load from this parameter slot.
       // Create the frame index object for this incoming parameter...
       int FI = MFI->CreateFixedObject(LocVT.getSizeInBits()/8,
-                                      VA.getLocMemOffset());
+                                      VA.getLocMemOffset(), true);
 
       // Create the SelectionDAG nodes corresponding to a load
       // from this parameter
       SDValue FIN = DAG.getFrameIndex(FI, getPointerTy());
       ArgValue = DAG.getLoad(LocVT, dl, Chain, FIN,
-                             PseudoSourceValue::getFixedStack(FI), 0);
+                             PseudoSourceValue::getFixedStack(FI), 0,
+                             false, false, 0);
     }
 
     // If this is an 8/16/32-bit value, it is really passed promoted to 64
@@ -348,13 +369,14 @@ SystemZTargetLowering::LowerCCCArguments(SDValue Chain,
 /// TODO: sret.
 SDValue
 SystemZTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
-                                      unsigned CallConv, bool isVarArg,
+                                      CallingConv::ID CallConv, bool isVarArg,
                                       bool isTailCall,
                                       const SmallVectorImpl<ISD::OutputArg>
                                         &Outs,
+                                      const SmallVectorImpl<SDValue> &OutVals,
                                       const SmallVectorImpl<ISD::InputArg> &Ins,
                                       DebugLoc dl, SelectionDAG &DAG,
-                                      SmallVectorImpl<SDValue> &InVals) {
+                                      SmallVectorImpl<SDValue> &InVals) const {
 
   MachineFunction &MF = DAG.getMachineFunction();
 
@@ -382,7 +404,7 @@ SystemZTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
     CCValAssign &VA = ArgLocs[i];
 
-    SDValue Arg = Outs[i].Val;
+    SDValue Arg = OutVals[i];
 
     // Promote the value if needed.
     switch (VA.getLocInfo()) {
@@ -419,7 +441,8 @@ SystemZTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
                                    DAG.getIntPtrConstant(Offset));
 
       MemOpChains.push_back(DAG.getStore(Chain, dl, Arg, PtrOff,
-                                         PseudoSourceValue::getStack(), Offset));
+                                         PseudoSourceValue::getStack(), Offset,
+                                         false, false, 0));
     }
   }
 
@@ -443,7 +466,7 @@ SystemZTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
   // turn it into a TargetGlobalAddress node so that legalize doesn't hack it.
   // Likewise ExternalSymbol -> TargetExternalSymbol.
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
-    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), getPointerTy());
+    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), dl, getPointerTy());
   else if (ExternalSymbolSDNode *E = dyn_cast<ExternalSymbolSDNode>(Callee))
     Callee = DAG.getTargetExternalSymbol(E->getSymbol(), getPointerTy());
 
@@ -483,11 +506,11 @@ SystemZTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
 ///
 SDValue
 SystemZTargetLowering::LowerCallResult(SDValue Chain, SDValue InFlag,
-                                       unsigned CallConv, bool isVarArg,
+                                       CallingConv::ID CallConv, bool isVarArg,
                                        const SmallVectorImpl<ISD::InputArg>
                                          &Ins,
                                        DebugLoc dl, SelectionDAG &DAG,
-                                       SmallVectorImpl<SDValue> &InVals) {
+                                       SmallVectorImpl<SDValue> &InVals) const {
 
   // Assign locations to each value returned by this call.
   SmallVector<CCValAssign, 16> RVLocs;
@@ -527,9 +550,10 @@ SystemZTargetLowering::LowerCallResult(SDValue Chain, SDValue InFlag,
 
 SDValue
 SystemZTargetLowering::LowerReturn(SDValue Chain,
-                                   unsigned CallConv, bool isVarArg,
+                                   CallingConv::ID CallConv, bool isVarArg,
                                    const SmallVectorImpl<ISD::OutputArg> &Outs,
-                                   DebugLoc dl, SelectionDAG &DAG) {
+                                   const SmallVectorImpl<SDValue> &OutVals,
+                                   DebugLoc dl, SelectionDAG &DAG) const {
 
   // CCValAssign - represent the assignment of the return value to a location
   SmallVector<CCValAssign, 16> RVLocs;
@@ -554,7 +578,7 @@ SystemZTargetLowering::LowerReturn(SDValue Chain,
   // Copy the result values into the output registers.
   for (unsigned i = 0; i != RVLocs.size(); ++i) {
     CCValAssign &VA = RVLocs[i];
-    SDValue ResValue = Outs[i].Val;
+    SDValue ResValue = OutVals[i];
     assert(VA.isRegLoc() && "Can only return in registers!");
 
     // If this is an 8/16/32-bit value, it is really should be passed promoted
@@ -582,7 +606,7 @@ SystemZTargetLowering::LowerReturn(SDValue Chain,
 
 SDValue SystemZTargetLowering::EmitCmp(SDValue LHS, SDValue RHS,
                                        ISD::CondCode CC, SDValue &SystemZCC,
-                                       SelectionDAG &DAG) {
+                                       SelectionDAG &DAG) const {
   // FIXME: Emit a test if RHS is zero
 
   bool isUnsigned = false;
@@ -656,11 +680,11 @@ SDValue SystemZTargetLowering::EmitCmp(SDValue LHS, SDValue RHS,
 
   DebugLoc dl = LHS.getDebugLoc();
   return DAG.getNode((isUnsigned ? SystemZISD::UCMP : SystemZISD::CMP),
-                     dl, MVT::Flag, LHS, RHS);
+                     dl, MVT::i64, LHS, RHS);
 }
 
 
-SDValue SystemZTargetLowering::LowerBR_CC(SDValue Op, SelectionDAG &DAG) {
+SDValue SystemZTargetLowering::LowerBR_CC(SDValue Op, SelectionDAG &DAG) const {
   SDValue Chain = Op.getOperand(0);
   ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(1))->get();
   SDValue LHS   = Op.getOperand(2);
@@ -674,7 +698,8 @@ SDValue SystemZTargetLowering::LowerBR_CC(SDValue Op, SelectionDAG &DAG) {
                      Chain, Dest, SystemZCC, Flag);
 }
 
-SDValue SystemZTargetLowering::LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) {
+SDValue SystemZTargetLowering::LowerSELECT_CC(SDValue Op,
+                                              SelectionDAG &DAG) const {
   SDValue LHS    = Op.getOperand(0);
   SDValue RHS    = Op.getOperand(1);
   SDValue TrueV  = Op.getOperand(2);
@@ -696,9 +721,9 @@ SDValue SystemZTargetLowering::LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) {
 }
 
 SDValue SystemZTargetLowering::LowerGlobalAddress(SDValue Op,
-                                                  SelectionDAG &DAG) {
+                                                  SelectionDAG &DAG) const {
   DebugLoc dl = Op.getDebugLoc();
-  GlobalValue *GV = cast<GlobalAddressSDNode>(Op)->getGlobal();
+  const GlobalValue *GV = cast<GlobalAddressSDNode>(Op)->getGlobal();
   int64_t Offset = cast<GlobalAddressSDNode>(Op)->getOffset();
 
   bool IsPic = getTargetMachine().getRelocationModel() == Reloc::PIC_;
@@ -707,14 +732,14 @@ SDValue SystemZTargetLowering::LowerGlobalAddress(SDValue Op,
 
   SDValue Result;
   if (!IsPic && !ExtraLoadRequired) {
-    Result = DAG.getTargetGlobalAddress(GV, getPointerTy(), Offset);
+    Result = DAG.getTargetGlobalAddress(GV, dl, getPointerTy(), Offset);
     Offset = 0;
   } else {
     unsigned char OpFlags = 0;
     if (ExtraLoadRequired)
       OpFlags = SystemZII::MO_GOTENT;
 
-    Result = DAG.getTargetGlobalAddress(GV, getPointerTy(), 0, OpFlags);
+    Result = DAG.getTargetGlobalAddress(GV, dl, getPointerTy(), 0, OpFlags);
   }
 
   Result = DAG.getNode(SystemZISD::PCRelativeWrapper, dl,
@@ -722,7 +747,7 @@ SDValue SystemZTargetLowering::LowerGlobalAddress(SDValue Op,
 
   if (ExtraLoadRequired)
     Result = DAG.getLoad(getPointerTy(), dl, DAG.getEntryNode(), Result,
-                         PseudoSourceValue::getGOT(), 0);
+                         PseudoSourceValue::getGOT(), 0, false, false, 0);
 
   // If there was a non-zero offset that we didn't fold, create an explicit
   // addition for it.
@@ -735,7 +760,7 @@ SDValue SystemZTargetLowering::LowerGlobalAddress(SDValue Op,
 
 // FIXME: PIC here
 SDValue SystemZTargetLowering::LowerJumpTable(SDValue Op,
-                                              SelectionDAG &DAG) {
+                                              SelectionDAG &DAG) const {
   DebugLoc dl = Op.getDebugLoc();
   JumpTableSDNode *JT = cast<JumpTableSDNode>(Op);
   SDValue Result = DAG.getTargetJumpTable(JT->getIndex(), getPointerTy());
@@ -747,7 +772,7 @@ SDValue SystemZTargetLowering::LowerJumpTable(SDValue Op,
 // FIXME: PIC here
 // FIXME: This is just dirty hack. We need to lower cpool properly
 SDValue SystemZTargetLowering::LowerConstantPool(SDValue Op,
-                                                 SelectionDAG &DAG) {
+                                                 SelectionDAG &DAG) const {
   DebugLoc dl = Op.getDebugLoc();
   ConstantPoolSDNode *CP = cast<ConstantPoolSDNode>(Op);
 
@@ -805,15 +830,19 @@ SystemZTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   MachineBasicBlock *copy0MBB = F->CreateMachineBasicBlock(LLVM_BB);
   MachineBasicBlock *copy1MBB = F->CreateMachineBasicBlock(LLVM_BB);
   SystemZCC::CondCodes CC = (SystemZCC::CondCodes)MI->getOperand(3).getImm();
-  BuildMI(BB, dl, TII.getBrCond(CC)).addMBB(copy1MBB);
   F->insert(I, copy0MBB);
   F->insert(I, copy1MBB);
   // Update machine-CFG edges by transferring all successors of the current
   // block to the new block which will contain the Phi node for the select.
-  copy1MBB->transferSuccessors(BB);
+  copy1MBB->splice(copy1MBB->begin(), BB,
+                   llvm::next(MachineBasicBlock::iterator(MI)),
+                   BB->end());
+  copy1MBB->transferSuccessorsAndUpdatePHIs(BB);
   // Next, add the true and fallthrough blocks as its successors.
   BB->addSuccessor(copy0MBB);
   BB->addSuccessor(copy1MBB);
+
+  BuildMI(BB, dl, TII.getBrCond(CC)).addMBB(copy1MBB);
 
   //  copy0MBB:
   //   %FalseValue = ...
@@ -827,11 +856,11 @@ SystemZTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   //   %Result = phi [ %FalseValue, copy0MBB ], [ %TrueValue, thisMBB ]
   //  ...
   BB = copy1MBB;
-  BuildMI(BB, dl, TII.get(SystemZ::PHI),
+  BuildMI(*BB, BB->begin(), dl, TII.get(SystemZ::PHI),
           MI->getOperand(0).getReg())
     .addReg(MI->getOperand(2).getReg()).addMBB(copy0MBB)
     .addReg(MI->getOperand(1).getReg()).addMBB(thisMBB);
 
-  F->DeleteMachineInstr(MI);   // The pseudo instruction is gone now.
+  MI->eraseFromParent();   // The pseudo instruction is gone now.
   return BB;
 }

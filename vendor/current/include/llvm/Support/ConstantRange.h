@@ -33,7 +33,7 @@
 #define LLVM_SUPPORT_CONSTANT_RANGE_H
 
 #include "llvm/ADT/APInt.h"
-#include "llvm/Support/DataTypes.h"
+#include "llvm/System/DataTypes.h"
 
 namespace llvm {
 
@@ -41,8 +41,6 @@ namespace llvm {
 ///
 class ConstantRange {
   APInt Lower, Upper;
-  static ConstantRange intersect1Wrapped(const ConstantRange &LHS,
-                                         const ConstantRange &RHS);
 
 public:
   /// Initialize a full (the default) or empty set for the specified bit width.
@@ -187,28 +185,54 @@ public:
   /// truncated to the specified type.
   ConstantRange truncate(uint32_t BitWidth) const;
 
+  /// zextOrTrunc - make this range have the bit width given by \p BitWidth. The
+  /// value is zero extended, truncated, or left alone to make it that width.
+  ConstantRange zextOrTrunc(uint32_t BitWidth) const;
+  
+  /// sextOrTrunc - make this range have the bit width given by \p BitWidth. The
+  /// value is sign extended, truncated, or left alone to make it that width.
+  ConstantRange sextOrTrunc(uint32_t BitWidth) const;
+
   /// add - Return a new range representing the possible values resulting
-  /// from an addition of a value in this range and a value in Other.
+  /// from an addition of a value in this range and a value in \p Other.
   ConstantRange add(const ConstantRange &Other) const;
 
+  /// sub - Return a new range representing the possible values resulting
+  /// from a subtraction of a value in this range and a value in \p Other.
+  ConstantRange sub(const ConstantRange &Other) const;
+
   /// multiply - Return a new range representing the possible values resulting
-  /// from a multiplication of a value in this range and a value in Other.
+  /// from a multiplication of a value in this range and a value in \p Other.
   /// TODO: This isn't fully implemented yet.
   ConstantRange multiply(const ConstantRange &Other) const;
 
   /// smax - Return a new range representing the possible values resulting
-  /// from a signed maximum of a value in this range and a value in Other.
+  /// from a signed maximum of a value in this range and a value in \p Other.
   ConstantRange smax(const ConstantRange &Other) const;
 
   /// umax - Return a new range representing the possible values resulting
-  /// from an unsigned maximum of a value in this range and a value in Other.
+  /// from an unsigned maximum of a value in this range and a value in \p Other.
   ConstantRange umax(const ConstantRange &Other) const;
 
   /// udiv - Return a new range representing the possible values resulting
-  /// from an unsigned division of a value in this range and a value in Other.
-  /// TODO: This isn't fully implemented yet.
+  /// from an unsigned division of a value in this range and a value in
+  /// \p Other.
   ConstantRange udiv(const ConstantRange &Other) const;
 
+  /// shl - Return a new range representing the possible values resulting
+  /// from a left shift of a value in this range by a value in \p Other.
+  /// TODO: This isn't fully implemented yet.
+  ConstantRange shl(const ConstantRange &Other) const;
+
+  /// lshr - Return a new range representing the possible values resulting
+  /// from a logical right shift of a value in this range and a value in
+  /// \p Other.
+  ConstantRange lshr(const ConstantRange &Other) const;
+
+  /// inverse - Return a new range that is the logical not of the current set.
+  ///
+  ConstantRange inverse() const;
+  
   /// print - Print out the bounds to a stream...
   ///
   void print(raw_ostream &OS) const;
@@ -222,8 +246,6 @@ inline raw_ostream &operator<<(raw_ostream &OS, const ConstantRange &CR) {
   CR.print(OS);
   return OS;
 }
-
-std::ostream &operator<<(std::ostream &OS, const ConstantRange &CR);
 
 } // End llvm namespace
 

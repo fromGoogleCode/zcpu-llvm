@@ -19,10 +19,11 @@ add_llvm_target(AlphaCodeGen
   AlphaISelLowering.cpp
   AlphaJITInfo.cpp
   AlphaLLRP.cpp
+  AlphaMCAsmInfo.cpp
   AlphaRegisterInfo.cpp
   AlphaSubtarget.cpp
-  AlphaTargetAsmInfo.cpp
   AlphaTargetMachine.cpp
+  AlphaSelectionDAGInfo.cpp
   )
 
 target_link_libraries (LLVMAlphaCodeGen LLVMSelectionDAG)

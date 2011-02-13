@@ -17,13 +17,13 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/ValueTypes.h"
-#include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/Target/TargetCallingConv.h"
+#include "llvm/CallingConv.h"
 
 namespace llvm {
   class TargetRegisterInfo;
   class TargetMachine;
   class CCState;
-  class SDNode;
 
 /// CCValAssign - Represent assignment of one arg/retval to a location.
 class CCValAssign {
@@ -34,6 +34,9 @@ public:
     ZExt,   // The value is zero extended in the location.
     AExt,   // The value is extended with undefined upper bits.
     BCvt,   // The value is bit-converted in the location.
+    VExt,   // The value is vector-widened in the location.
+            // FIXME: Not implemented yet. Code that uses AExt to mean
+            // vector-widen should be fixed to use VExt instead.
     Indirect // The location contains pointer to the value.
     // TODO: a subset of the value is in the location.
   };
@@ -142,7 +145,7 @@ typedef bool CCCustomFn(unsigned &ValNo, EVT &ValVT,
 /// return values.  It captures which registers are already assigned and which
 /// stack slots are used.  It provides accessors to allocate these values.
 class CCState {
-  unsigned CallingConv;
+  CallingConv::ID CallingConv;
   bool IsVarArg;
   const TargetMachine &TM;
   const TargetRegisterInfo &TRI;
@@ -152,7 +155,7 @@ class CCState {
   unsigned StackOffset;
   SmallVector<uint32_t, 16> UsedRegs;
 public:
-  CCState(unsigned CC, bool isVarArg, const TargetMachine &TM,
+  CCState(CallingConv::ID CC, bool isVarArg, const TargetMachine &TM,
           SmallVector<CCValAssign, 16> &locs, LLVMContext &C);
 
   void addLoc(const CCValAssign &V) {
@@ -161,7 +164,7 @@ public:
 
   LLVMContext &getContext() const { return Context; }
   const TargetMachine &getTarget() const { return TM; }
-  unsigned getCallingConv() const { return CallingConv; }
+  CallingConv::ID getCallingConv() const { return CallingConv; }
   bool isVarArg() const { return IsVarArg; }
 
   unsigned getNextStackOffset() const { return StackOffset; }
@@ -181,6 +184,12 @@ public:
   /// incorporating info about the result values into this state.
   void AnalyzeReturn(const SmallVectorImpl<ISD::OutputArg> &Outs,
                      CCAssignFn Fn);
+
+  /// CheckReturn - Analyze the return values of a function, returning
+  /// true if the return can be performed without sret-demotion, and
+  /// false otherwise.
+  bool CheckReturn(const SmallVectorImpl<ISD::OutputArg> &ArgsFlags,
+                   CCAssignFn Fn);
 
   /// AnalyzeCallOperands - Analyze the outgoing arguments to a call,
   /// incorporating info about the passed values into this state.
@@ -264,6 +273,12 @@ public:
     unsigned Result = StackOffset;
     StackOffset += Size;
     return Result;
+  }
+
+  /// Version of AllocateStack with extra register to be shadowed.
+  unsigned AllocateStack(unsigned Size, unsigned Align, unsigned ShadowReg) {
+    MarkAllocated(ShadowReg);
+    return AllocateStack(Size, Align);
   }
 
   // HandleByVal - Allocate a stack slot large enough to pass an argument by

@@ -1,11 +1,14 @@
 ; This test makes sure that these instructions are properly eliminated.
 ;
-; RUN: llvm-as < %s | opt -instcombine | llvm-dis | not grep load
+; RUN: opt < %s -instcombine -S | not grep load
 
 @X = constant i32 42		; <i32*> [#uses=2]
 @X2 = constant i32 47		; <i32*> [#uses=1]
 @Y = constant [2 x { i32, float }] [ { i32, float } { i32 12, float 1.000000e+00 }, { i32, float } { i32 37, float 0x3FF3B2FEC0000000 } ]		; <[2 x { i32, float }]*> [#uses=2]
 @Z = constant [2 x { i32, float }] zeroinitializer		; <[2 x { i32, float }]*> [#uses=1]
+
+@GLOBAL = internal constant [4 x i32] zeroinitializer
+
 
 define i32 @test1() {
 	%B = load i32* @X		; <i32> [#uses=1]
@@ -76,3 +79,20 @@ define double @test11(double* %p) {
   %x = load double* %t1
   ret double %x
 }
+
+define i32 @test12(i32* %P) {
+        %A = alloca i32
+        store i32 123, i32* %A
+        ; Cast the result of the load not the source
+        %Q = bitcast i32* %A to i32*
+        %V = load i32* %Q
+        ret i32 %V
+}
+
+define <16 x i8> @test13(<2 x i64> %x) {
+entry:
+	%tmp = load <16 x i8> * bitcast ([4 x i32]* @GLOBAL to <16 x i8>*)
+	ret <16 x i8> %tmp
+}
+
+

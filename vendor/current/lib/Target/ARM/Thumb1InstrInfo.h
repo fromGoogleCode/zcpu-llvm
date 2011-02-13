@@ -1,4 +1,4 @@
-//===- Thumb1InstrInfo.h - Thumb-1 Instruction Information ----------*- C++ -*-===//
+//===- Thumb1InstrInfo.h - Thumb-1 Instruction Information ------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -31,9 +31,6 @@ public:
   // if there is not such an opcode.
   unsigned getUnindexedOpcode(unsigned Opc) const;
 
-  // Return true if the block does not fall through.
-  bool BlockHasNoFallThrough(const MachineBasicBlock &MBB) const;
-
   /// getRegisterInfo - TargetInstrInfo is a superset of MRegister info.  As
   /// such, whenever a client has an instance of instruction info, it should
   /// always be able to get register info as well (through this method).
@@ -42,40 +39,29 @@ public:
 
   bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MI,
-                                 const std::vector<CalleeSavedInfo> &CSI) const;
+                                 const std::vector<CalleeSavedInfo> &CSI,
+                                 const TargetRegisterInfo *TRI) const;
   bool restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MI,
-                                   const std::vector<CalleeSavedInfo> &CSI) const;
+                                   const std::vector<CalleeSavedInfo> &CSI,
+                                   const TargetRegisterInfo *TRI) const;
 
-  bool copyRegToReg(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator I,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC) const;
+  void copyPhysReg(MachineBasicBlock &MBB,
+                   MachineBasicBlock::iterator I, DebugLoc DL,
+                   unsigned DestReg, unsigned SrcReg,
+                   bool KillSrc) const;
   void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MBBI,
                                    unsigned SrcReg, bool isKill, int FrameIndex,
-                                   const TargetRegisterClass *RC) const;
+                           const TargetRegisterClass *RC,
+                           const TargetRegisterInfo *TRI) const;
 
   void loadRegFromStackSlot(MachineBasicBlock &MBB,
                                     MachineBasicBlock::iterator MBBI,
                                     unsigned DestReg, int FrameIndex,
-                                    const TargetRegisterClass *RC) const;
+                            const TargetRegisterClass *RC,
+                            const TargetRegisterInfo *TRI) const;
 
-  bool canFoldMemoryOperand(const MachineInstr *MI,
-                                    const SmallVectorImpl<unsigned> &Ops) const;
-
-  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                      MachineInstr* MI,
-                                      const SmallVectorImpl<unsigned> &Ops,
-                                      int FrameIndex) const;
-
-  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                      MachineInstr* MI,
-                                      const SmallVectorImpl<unsigned> &Ops,
-                                      MachineInstr* LoadMI) const {
-    return 0;
-  }
 };
 }
 

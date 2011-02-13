@@ -1,6 +1,6 @@
-; RUN: llvm-as < %s | llc -march=x86 | grep mov | count 3
+; RUN: llc < %s -march=x86 | grep mov | count 3
 
-define fastcc i32 @_Z18yy_get_next_bufferv() {
+define fastcc i32 @_Z18yy_get_next_bufferv() nounwind {
 entry:
 	br label %bb131
 

@@ -115,16 +115,18 @@ void DAGTypeLegalizer::ExpandRes_BIT_CONVERT(SDNode *N, SDValue &Lo,
   // Create the stack frame object.  Make sure it is aligned for both
   // the source and expanded destination types.
   unsigned Alignment =
-    TLI.getTargetData()->getPrefTypeAlignment(NOutVT.getTypeForEVT(*DAG.getContext()));
+    TLI.getTargetData()->getPrefTypeAlignment(NOutVT.
+                                              getTypeForEVT(*DAG.getContext()));
   SDValue StackPtr = DAG.CreateStackTemporary(InVT, Alignment);
   int SPFI = cast<FrameIndexSDNode>(StackPtr.getNode())->getIndex();
   const Value *SV = PseudoSourceValue::getFixedStack(SPFI);
 
   // Emit a store to the stack slot.
-  SDValue Store = DAG.getStore(DAG.getEntryNode(), dl, InOp, StackPtr, SV, 0);
+  SDValue Store = DAG.getStore(DAG.getEntryNode(), dl, InOp, StackPtr, SV, 0,
+                               false, false, 0);
 
   // Load the first half from the stack slot.
-  Lo = DAG.getLoad(NOutVT, dl, Store, StackPtr, SV, 0);
+  Lo = DAG.getLoad(NOutVT, dl, Store, StackPtr, SV, 0, false, false, 0);
 
   // Increment the pointer to the other half.
   unsigned IncrementSize = NOutVT.getSizeInBits() / 8;
@@ -133,7 +135,7 @@ void DAGTypeLegalizer::ExpandRes_BIT_CONVERT(SDNode *N, SDValue &Lo,
 
   // Load the second half from the stack slot.
   Hi = DAG.getLoad(NOutVT, dl, Store, StackPtr, SV, IncrementSize, false,
-                   MinAlign(Alignment, IncrementSize));
+                   false, MinAlign(Alignment, IncrementSize));
 
   // Handle endianness of the load.
   if (TLI.isBigEndian())
@@ -171,8 +173,9 @@ void DAGTypeLegalizer::ExpandRes_EXTRACT_VECTOR_ELT(SDNode *N, SDValue &Lo,
   EVT NewVT = TLI.getTypeToTransformTo(*DAG.getContext(), OldVT);
 
   SDValue NewVec = DAG.getNode(ISD::BIT_CONVERT, dl,
-                                 EVT::getVectorVT(*DAG.getContext(), NewVT, 2*OldElts),
-                                 OldVec);
+                               EVT::getVectorVT(*DAG.getContext(),
+                                                NewVT, 2*OldElts),
+                               OldVec);
 
   // Extract the elements at 2 * Idx and 2 * Idx + 1 from the new vector.
   SDValue Idx = N->getOperand(1);
@@ -204,11 +207,12 @@ void DAGTypeLegalizer::ExpandRes_NormalLoad(SDNode *N, SDValue &Lo,
   int SVOffset = LD->getSrcValueOffset();
   unsigned Alignment = LD->getAlignment();
   bool isVolatile = LD->isVolatile();
+  bool isNonTemporal = LD->isNonTemporal();
 
   assert(NVT.isByteSized() && "Expanded type not byte sized!");
 
   Lo = DAG.getLoad(NVT, dl, Chain, Ptr, LD->getSrcValue(), SVOffset,
-                   isVolatile, Alignment);
+                   isVolatile, isNonTemporal, Alignment);
 
   // Increment the pointer to the other half.
   unsigned IncrementSize = NVT.getSizeInBits() / 8;
@@ -216,7 +220,8 @@ void DAGTypeLegalizer::ExpandRes_NormalLoad(SDNode *N, SDValue &Lo,
                     DAG.getIntPtrConstant(IncrementSize));
   Hi = DAG.getLoad(NVT, dl, Chain, Ptr, LD->getSrcValue(),
                    SVOffset+IncrementSize,
-                   isVolatile, MinAlign(Alignment, IncrementSize));
+                   isVolatile, isNonTemporal,
+                   MinAlign(Alignment, IncrementSize));
 
   // Build a factor node to remember that this load is independent of the
   // other one.
@@ -233,13 +238,15 @@ void DAGTypeLegalizer::ExpandRes_NormalLoad(SDNode *N, SDValue &Lo,
 }
 
 void DAGTypeLegalizer::ExpandRes_VAARG(SDNode *N, SDValue &Lo, SDValue &Hi) {
-  EVT NVT = TLI.getTypeToTransformTo(*DAG.getContext(), N->getValueType(0));
+  EVT OVT = N->getValueType(0);
+  EVT NVT = TLI.getTypeToTransformTo(*DAG.getContext(), OVT);
   SDValue Chain = N->getOperand(0);
   SDValue Ptr = N->getOperand(1);
   DebugLoc dl = N->getDebugLoc();
+  const unsigned Align = N->getConstantOperandVal(3);
 
-  Lo = DAG.getVAArg(NVT, dl, Chain, Ptr, N->getOperand(2));
-  Hi = DAG.getVAArg(NVT, dl, Lo.getValue(1), Ptr, N->getOperand(2));
+  Lo = DAG.getVAArg(NVT, dl, Chain, Ptr, N->getOperand(2), Align);
+  Hi = DAG.getVAArg(NVT, dl, Lo.getValue(1), Ptr, N->getOperand(2), 0);
 
   // Handle endianness of the load.
   if (TLI.isBigEndian())
@@ -264,7 +271,9 @@ SDValue DAGTypeLegalizer::ExpandOp_BIT_CONVERT(SDNode *N) {
     // is no point, and it might create expansion loops).  For example, on
     // x86 this turns v1i64 = BIT_CONVERT i64 into v1i64 = BIT_CONVERT v2i32.
     EVT OVT = N->getOperand(0).getValueType();
-    EVT NVT = EVT::getVectorVT(*DAG.getContext(), TLI.getTypeToTransformTo(*DAG.getContext(), OVT), 2);
+    EVT NVT = EVT::getVectorVT(*DAG.getContext(),
+                               TLI.getTypeToTransformTo(*DAG.getContext(), OVT),
+                               2);
 
     if (isTypeLegal(NVT)) {
       SDValue Parts[2];
@@ -308,8 +317,9 @@ SDValue DAGTypeLegalizer::ExpandOp_BUILD_VECTOR(SDNode *N) {
   }
 
   SDValue NewVec = DAG.getNode(ISD::BUILD_VECTOR, dl,
-                                 EVT::getVectorVT(*DAG.getContext(), NewVT, NewElts.size()),
-                                 &NewElts[0], NewElts.size());
+                               EVT::getVectorVT(*DAG.getContext(),
+                                                NewVT, NewElts.size()),
+                               &NewElts[0], NewElts.size());
 
   // Convert the new vector to the old vector type.
   return DAG.getNode(ISD::BIT_CONVERT, dl, VecVT, NewVec);
@@ -376,12 +386,14 @@ SDValue DAGTypeLegalizer::ExpandOp_NormalStore(SDNode *N, unsigned OpNo) {
   DebugLoc dl = N->getDebugLoc();
 
   StoreSDNode *St = cast<StoreSDNode>(N);
-  EVT NVT = TLI.getTypeToTransformTo(*DAG.getContext(), St->getValue().getValueType());
+  EVT NVT = TLI.getTypeToTransformTo(*DAG.getContext(),
+                                     St->getValue().getValueType());
   SDValue Chain = St->getChain();
   SDValue Ptr = St->getBasePtr();
   int SVOffset = St->getSrcValueOffset();
   unsigned Alignment = St->getAlignment();
   bool isVolatile = St->isVolatile();
+  bool isNonTemporal = St->isNonTemporal();
 
   assert(NVT.isByteSized() && "Expanded type not byte sized!");
   unsigned IncrementSize = NVT.getSizeInBits() / 8;
@@ -393,14 +405,15 @@ SDValue DAGTypeLegalizer::ExpandOp_NormalStore(SDNode *N, unsigned OpNo) {
     std::swap(Lo, Hi);
 
   Lo = DAG.getStore(Chain, dl, Lo, Ptr, St->getSrcValue(), SVOffset,
-                    isVolatile, Alignment);
+                    isVolatile, isNonTemporal, Alignment);
 
   Ptr = DAG.getNode(ISD::ADD, dl, Ptr.getValueType(), Ptr,
                     DAG.getIntPtrConstant(IncrementSize));
   assert(isTypeLegal(Ptr.getValueType()) && "Pointers must be legal!");
   Hi = DAG.getStore(Chain, dl, Hi, Ptr, St->getSrcValue(),
                     SVOffset + IncrementSize,
-                    isVolatile, MinAlign(Alignment, IncrementSize));
+                    isVolatile, isNonTemporal,
+                    MinAlign(Alignment, IncrementSize));
 
   return DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Lo, Hi);
 }
@@ -463,7 +476,6 @@ void DAGTypeLegalizer::SplitRes_SELECT_CC(SDNode *N, SDValue &Lo,
 
 void DAGTypeLegalizer::SplitRes_UNDEF(SDNode *N, SDValue &Lo, SDValue &Hi) {
   EVT LoVT, HiVT;
-  DebugLoc dl = N->getDebugLoc();
   GetSplitDestVTs(N->getValueType(0), LoVT, HiVT);
   Lo = DAG.getUNDEF(LoVT);
   Hi = DAG.getUNDEF(HiVT);

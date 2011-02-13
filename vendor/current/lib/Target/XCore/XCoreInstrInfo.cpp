@@ -14,12 +14,12 @@
 #include "XCoreMachineFunctionInfo.h"
 #include "XCoreInstrInfo.h"
 #include "XCore.h"
-#include "llvm/ADT/STLExtras.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineLocation.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "XCoreGenInstrInfo.inc"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -44,33 +44,6 @@ XCoreInstrInfo::XCoreInstrInfo()
 
 static bool isZeroImm(const MachineOperand &op) {
   return op.isImm() && op.getImm() == 0;
-}
-
-/// Return true if the instruction is a register to register move and
-/// leave the source and dest operands in the passed parameters.
-///
-bool XCoreInstrInfo::isMoveInstr(const MachineInstr &MI,
-                                 unsigned &SrcReg, unsigned &DstReg,
-                                 unsigned &SrcSR, unsigned &DstSR) const {
-  SrcSR = DstSR = 0; // No sub-registers.
-
-  // We look for 4 kinds of patterns here:
-  // add dst, src, 0
-  // sub dst, src, 0
-  // or dst, src, src
-  // and dst, src, src
-  if ((MI.getOpcode() == XCore::ADD_2rus || MI.getOpcode() == XCore::SUB_2rus)
-      && isZeroImm(MI.getOperand(2))) {
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  } else if ((MI.getOpcode() == XCore::OR_3r || MI.getOpcode() == XCore::AND_3r)
-      && MI.getOperand(1).getReg() == MI.getOperand(2).getReg()) {
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  }
-  return false;
 }
 
 /// isLoadFromStackSlot - If the specified machine instruction is a direct
@@ -116,30 +89,6 @@ XCoreInstrInfo::isStoreToStackSlot(const MachineInstr *MI,
   return 0;
 }
 
-/// isInvariantLoad - Return true if the specified instruction (which is marked
-/// mayLoad) is loading from a location whose value is invariant across the
-/// function.  For example, loading a value from the constant pool or from
-/// from the argument area of a function if it does not change.  This should
-/// only return true of *all* loads the instruction does are invariant (if it
-/// does multiple loads).
-bool
-XCoreInstrInfo::isInvariantLoad(const MachineInstr *MI) const {
-  // Loads from constants pools and loads from invariant argument slots are
-  // invariant
-  int Opcode = MI->getOpcode();
-  if (Opcode == XCore::LDWCP_ru6 || Opcode == XCore::LDWCP_lru6) {
-    return MI->getOperand(1).isCPI();
-  }
-  int FrameIndex;
-  if (isLoadFromStackSlot(MI, FrameIndex)) {
-    const MachineFrameInfo &MFI =
-      *MI->getParent()->getParent()->getFrameInfo();
-    return MFI.isFixedObjectIndex(FrameIndex) &&
-           MFI.isImmutableObjectIndex(FrameIndex);
-  }
-  return false;
-}
-
 //===----------------------------------------------------------------------===//
 // Branch Analysis
 //===----------------------------------------------------------------------===//
@@ -167,6 +116,11 @@ static inline bool IsBRF(unsigned BrOpc) {
 
 static inline bool IsCondBranch(unsigned BrOpc) {
   return IsBRF(BrOpc) || IsBRT(BrOpc);
+}
+
+static inline bool IsBR_JT(unsigned BrOpc) {
+  return BrOpc == XCore::BR_JT
+      || BrOpc == XCore::BR_JT32;
 }
 
 /// GetCondFromBranchOpc - Return the XCore CC that matches 
@@ -234,7 +188,15 @@ XCoreInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
                               bool AllowModify) const {
   // If the block has no terminators, it just falls into the block after it.
   MachineBasicBlock::iterator I = MBB.end();
-  if (I == MBB.begin() || !isUnpredicatedTerminator(--I))
+  if (I == MBB.begin())
+    return false;
+  --I;
+  while (I->isDebugValue()) {
+    if (I == MBB.begin())
+      return false;
+    --I;
+  }
+  if (!isUnpredicatedTerminator(I))
     return false;
 
   // Get the last instruction in the block.
@@ -295,6 +257,14 @@ XCoreInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
     return false;
   }
 
+  // Likewise if it ends with a branch table followed by an unconditional branch.
+  if (IsBR_JT(SecondLastInst->getOpcode()) && IsBRU(LastInst->getOpcode())) {
+    I = LastInst;
+    if (AllowModify)
+      I->eraseFromParent();
+    return true;
+  }
+
   // Otherwise, can't handle this.
   return true;
 }
@@ -302,9 +272,8 @@ XCoreInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
 unsigned
 XCoreInstrInfo::InsertBranch(MachineBasicBlock &MBB,MachineBasicBlock *TBB,
                              MachineBasicBlock *FBB,
-                             const SmallVectorImpl<MachineOperand> &Cond)const{
-  // FIXME there should probably be a DebugLoc argument here
-  DebugLoc dl = DebugLoc::getUnknownLoc();
+                             const SmallVectorImpl<MachineOperand> &Cond,
+                             DebugLoc DL)const{
   // Shouldn't be a fall through.
   assert(TBB && "InsertBranch must not be told to insert a fallthrough");
   assert((Cond.size() == 2 || Cond.size() == 0) &&
@@ -313,11 +282,11 @@ XCoreInstrInfo::InsertBranch(MachineBasicBlock &MBB,MachineBasicBlock *TBB,
   if (FBB == 0) { // One way branch.
     if (Cond.empty()) {
       // Unconditional branch
-      BuildMI(&MBB, dl, get(XCore::BRFU_lu6)).addMBB(TBB);
+      BuildMI(&MBB, DL, get(XCore::BRFU_lu6)).addMBB(TBB);
     } else {
       // Conditional branch.
       unsigned Opc = GetCondBranchFromCond((XCore::CondCode)Cond[0].getImm());
-      BuildMI(&MBB, dl, get(Opc)).addReg(Cond[1].getReg())
+      BuildMI(&MBB, DL, get(Opc)).addReg(Cond[1].getReg())
                              .addMBB(TBB);
     }
     return 1;
@@ -326,9 +295,9 @@ XCoreInstrInfo::InsertBranch(MachineBasicBlock &MBB,MachineBasicBlock *TBB,
   // Two-way Conditional branch.
   assert(Cond.size() == 2 && "Unexpected number of components!");
   unsigned Opc = GetCondBranchFromCond((XCore::CondCode)Cond[0].getImm());
-  BuildMI(&MBB, dl, get(Opc)).addReg(Cond[1].getReg())
+  BuildMI(&MBB, DL, get(Opc)).addReg(Cond[1].getReg())
                          .addMBB(TBB);
-  BuildMI(&MBB, dl, get(XCore::BRFU_lu6)).addMBB(FBB);
+  BuildMI(&MBB, DL, get(XCore::BRFU_lu6)).addMBB(FBB);
   return 2;
 }
 
@@ -337,6 +306,11 @@ XCoreInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
   MachineBasicBlock::iterator I = MBB.end();
   if (I == MBB.begin()) return 0;
   --I;
+  while (I->isDebugValue()) {
+    if (I == MBB.begin())
+      return 0;
+    --I;
+  }
   if (!IsBRU(I->getOpcode()) && !IsCondBranch(I->getOpcode()))
     return 0;
   
@@ -355,47 +329,41 @@ XCoreInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
   return 2;
 }
 
-bool XCoreInstrInfo::copyRegToReg(MachineBasicBlock &MBB,
-                                  MachineBasicBlock::iterator I,
-                                  unsigned DestReg, unsigned SrcReg,
-                                  const TargetRegisterClass *DestRC,
-                                  const TargetRegisterClass *SrcRC) const {
-  DebugLoc DL = DebugLoc::getUnknownLoc();
-  if (I != MBB.end()) DL = I->getDebugLoc();
+void XCoreInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator I, DebugLoc DL,
+                                 unsigned DestReg, unsigned SrcReg,
+                                 bool KillSrc) const {
+  bool GRDest = XCore::GRRegsRegClass.contains(DestReg);
+  bool GRSrc  = XCore::GRRegsRegClass.contains(SrcReg);
 
-  if (DestRC == SrcRC) {
-    if (DestRC == XCore::GRRegsRegisterClass) {
-      BuildMI(MBB, I, DL, get(XCore::ADD_2rus), DestReg)
-        .addReg(SrcReg)
-        .addImm(0);
-      return true;
-    } else {
-      return false;
-    }
+  if (GRDest && GRSrc) {
+    BuildMI(MBB, I, DL, get(XCore::ADD_2rus), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc))
+      .addImm(0);
+    return;
   }
   
-  if (SrcRC == XCore::RRegsRegisterClass && SrcReg == XCore::SP &&
-    DestRC == XCore::GRRegsRegisterClass) {
-    BuildMI(MBB, I, DL, get(XCore::LDAWSP_ru6), DestReg)
-      .addImm(0);
-    return true;
+  if (GRDest && SrcReg == XCore::SP) {
+    BuildMI(MBB, I, DL, get(XCore::LDAWSP_ru6), DestReg).addImm(0);
+    return;
   }
-  if (DestRC == XCore::RRegsRegisterClass && DestReg == XCore::SP &&
-    SrcRC == XCore::GRRegsRegisterClass) {
+
+  if (DestReg == XCore::SP && GRSrc) {
     BuildMI(MBB, I, DL, get(XCore::SETSP_1r))
-      .addReg(SrcReg);
-    return true;
+      .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
   }
-  return false;
+  llvm_unreachable("Impossible reg-to-reg copy");
 }
 
 void XCoreInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                          MachineBasicBlock::iterator I,
                                          unsigned SrcReg, bool isKill,
                                          int FrameIndex,
-                                         const TargetRegisterClass *RC) const
+                                         const TargetRegisterClass *RC,
+                                         const TargetRegisterInfo *TRI) const
 {
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+  DebugLoc DL;
   if (I != MBB.end()) DL = I->getDebugLoc();
   BuildMI(MBB, I, DL, get(XCore::STWFI))
     .addReg(SrcReg, getKillRegState(isKill))
@@ -406,9 +374,10 @@ void XCoreInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
 void XCoreInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           MachineBasicBlock::iterator I,
                                           unsigned DestReg, int FrameIndex,
-                                          const TargetRegisterClass *RC) const
+                                          const TargetRegisterClass *RC,
+                                          const TargetRegisterInfo *TRI) const
 {
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+  DebugLoc DL;
   if (I != MBB.end()) DL = I->getDebugLoc();
   BuildMI(MBB, I, DL, get(XCore::LDWFI), DestReg)
     .addFrameIndex(FrameIndex)
@@ -417,19 +386,17 @@ void XCoreInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
 
 bool XCoreInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                                MachineBasicBlock::iterator MI,
-                                  const std::vector<CalleeSavedInfo> &CSI) const
-{
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                          const TargetRegisterInfo *TRI) const {
   if (CSI.empty()) {
     return true;
   }
   MachineFunction *MF = MBB.getParent();
-  const MachineFrameInfo *MFI = MF->getFrameInfo();
-  MachineModuleInfo *MMI = MFI->getMachineModuleInfo();
   XCoreFunctionInfo *XFI = MF->getInfo<XCoreFunctionInfo>();
   
   bool emitFrameMoves = XCoreRegisterInfo::needsFrameMoves(*MF);
 
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+  DebugLoc DL;
   if (MI != MBB.end()) DL = MI->getDebugLoc();
   
   for (std::vector<CalleeSavedInfo>::const_iterator it = CSI.begin();
@@ -437,13 +404,14 @@ bool XCoreInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
     // Add the callee-saved register as live-in. It's killed at the spill.
     MBB.addLiveIn(it->getReg());
 
-    storeRegToStackSlot(MBB, MI, it->getReg(), true,
-                        it->getFrameIdx(), it->getRegClass());
+    unsigned Reg = it->getReg();
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    storeRegToStackSlot(MBB, MI, Reg, true,
+                        it->getFrameIdx(), RC, &RI);
     if (emitFrameMoves) {
-      unsigned SaveLabelId = MMI->NextLabelID();
-      BuildMI(MBB, MI, DL, get(XCore::DBG_LABEL)).addImm(SaveLabelId);
-      XFI->getSpillLabels().push_back(
-          std::pair<unsigned, CalleeSavedInfo>(SaveLabelId, *it));
+      MCSymbol *SaveLabel = MF->getContext().CreateTempSymbol();
+      BuildMI(MBB, MI, DL, get(XCore::PROLOG_LABEL)).addSym(SaveLabel);
+      XFI->getSpillLabels().push_back(std::make_pair(SaveLabel, *it));
     }
   }
   return true;
@@ -451,7 +419,8 @@ bool XCoreInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
 
 bool XCoreInstrInfo::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
                                          MachineBasicBlock::iterator MI,
-                               const std::vector<CalleeSavedInfo> &CSI) const
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                            const TargetRegisterInfo *TRI) const
 {
   bool AtStart = MI == MBB.begin();
   MachineBasicBlock::iterator BeforeI = MI;
@@ -459,10 +428,11 @@ bool XCoreInstrInfo::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
     --BeforeI;
   for (std::vector<CalleeSavedInfo>::const_iterator it = CSI.begin();
                                                     it != CSI.end(); ++it) {
-    
+    unsigned Reg = it->getReg();
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
     loadRegFromStackSlot(MBB, MI, it->getReg(),
                                   it->getFrameIdx(),
-                                  it->getRegClass());
+                         RC, &RI);
     assert(MI != MBB.begin() &&
            "loadRegFromStackSlot didn't insert any code!");
     // Insert in reverse order.  loadRegFromStackSlot can insert multiple
@@ -475,26 +445,6 @@ bool XCoreInstrInfo::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
     }
   }
   return true;
-}
-
-/// BlockHasNoFallThrough - Analyse if MachineBasicBlock does not
-/// fall-through into its successor block.
-bool XCoreInstrInfo::
-BlockHasNoFallThrough(const MachineBasicBlock &MBB) const 
-{
-  if (MBB.empty()) return false;
-  
-  switch (MBB.back().getOpcode()) {
-  case XCore::RETSP_u6:     // Return.
-  case XCore::RETSP_lu6:
-  case XCore::BAU_1r:       // Indirect branch.
-  case XCore::BRFU_u6:      // Uncond branch.
-  case XCore::BRFU_lu6:
-  case XCore::BRBU_u6:
-  case XCore::BRBU_lu6:
-    return true;
-  default: return false;
-  }
 }
 
 /// ReverseBranchCondition - Return the inverse opcode of the 

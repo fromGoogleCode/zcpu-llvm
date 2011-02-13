@@ -1,5 +1,5 @@
-(* RUN: %ocamlc -warn-error A llvm.cma llvm_analysis.cma %s -o %t 2> /dev/null
- * RUN: ./%t %t.bc
+(* RUN: %ocamlopt -warn-error A llvm.cmxa llvm_analysis.cmxa %s -o %t
+ * RUN: %t
  *)
 
 open Llvm

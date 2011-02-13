@@ -1,5 +1,6 @@
-; RUN: llvm-as < %s | llc -march=x86 -mcpu=core2 -o %t -f
-; RUN: grep shufp   %t | count 1
+; RUN: llc < %s -march=x86 -mcpu=core2 -o %t
+; RUN: grep movq    %t | count 1
+; RUN: grep pshufd  %t | count 1
 ; RUN: grep movupd  %t | count 1
 ; RUN: grep pshufhw %t | count 1
 

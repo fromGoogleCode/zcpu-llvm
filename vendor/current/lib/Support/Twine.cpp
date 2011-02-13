@@ -9,18 +9,25 @@
 
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
 std::string Twine::str() const {
   SmallString<256> Vec;
-  toVector(Vec);
-  return std::string(Vec.begin(), Vec.end());
+  return toStringRef(Vec).str();
 }
 
 void Twine::toVector(SmallVectorImpl<char> &Out) const {
   raw_svector_ostream OS(Out);
   print(OS);
+}
+
+StringRef Twine::toStringRef(SmallVectorImpl<char> &Out) const {
+  if (isSingleStringRef())
+    return getSingleStringRef();
+  toVector(Out);
+  return StringRef(Out.data(), Out.size());
 }
 
 void Twine::printOneChild(raw_ostream &OS, const void *Ptr, 
@@ -41,10 +48,10 @@ void Twine::printOneChild(raw_ostream &OS, const void *Ptr,
     OS << *static_cast<const StringRef*>(Ptr); 
     break;
   case Twine::DecUIKind:
-    OS << *static_cast<const unsigned int*>(Ptr);
+    OS << (unsigned)(uintptr_t)Ptr;
     break;
   case Twine::DecIKind:
-    OS << *static_cast<const int*>(Ptr);
+    OS << (int)(intptr_t)Ptr;
     break;
   case Twine::DecULKind:
     OS << *static_cast<const unsigned long*>(Ptr);
@@ -88,10 +95,10 @@ void Twine::printOneChildRepr(raw_ostream &OS, const void *Ptr,
        << static_cast<const StringRef*>(Ptr) << "\"";
     break;
   case Twine::DecUIKind:
-    OS << "decUI:\"" << *static_cast<const unsigned int*>(Ptr) << "\"";
+    OS << "decUI:\"" << (unsigned)(uintptr_t)Ptr << "\"";
     break;
   case Twine::DecIKind:
-    OS << "decI:\"" << *static_cast<const int*>(Ptr) << "\"";
+    OS << "decI:\"" << (int)(intptr_t)Ptr << "\"";
     break;
   case Twine::DecULKind:
     OS << "decUL:\"" << *static_cast<const unsigned long*>(Ptr) << "\"";
@@ -125,9 +132,9 @@ void Twine::printRepr(raw_ostream &OS) const {
 }
 
 void Twine::dump() const {
-  print(llvm::errs());
+  print(llvm::dbgs());
 }
 
 void Twine::dumpRepr() const {
-  printRepr(llvm::errs());
+  printRepr(llvm::dbgs());
 }

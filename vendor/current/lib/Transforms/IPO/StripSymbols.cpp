@@ -24,24 +24,22 @@
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Instructions.h"
-#include "llvm/LLVMContext.h"
 #include "llvm/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/ValueSymbolTable.h"
 #include "llvm/TypeSymbolTable.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/ADT/SmallPtrSet.h"
 using namespace llvm;
 
 namespace {
-  class VISIBILITY_HIDDEN StripSymbols : public ModulePass {
+  class StripSymbols : public ModulePass {
     bool OnlyDebugInfo;
   public:
     static char ID; // Pass identification, replacement for typeid
     explicit StripSymbols(bool ODI = false) 
-      : ModulePass(&ID), OnlyDebugInfo(ODI) {}
+      : ModulePass(ID), OnlyDebugInfo(ODI) {}
 
     virtual bool runOnModule(Module &M);
 
@@ -50,11 +48,11 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN StripNonDebugSymbols : public ModulePass {
+  class StripNonDebugSymbols : public ModulePass {
   public:
     static char ID; // Pass identification, replacement for typeid
     explicit StripNonDebugSymbols()
-      : ModulePass(&ID) {}
+      : ModulePass(ID) {}
 
     virtual bool runOnModule(Module &M);
 
@@ -63,11 +61,24 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN StripDebugDeclare : public ModulePass {
+  class StripDebugDeclare : public ModulePass {
   public:
     static char ID; // Pass identification, replacement for typeid
     explicit StripDebugDeclare()
-      : ModulePass(&ID) {}
+      : ModulePass(ID) {}
+
+    virtual bool runOnModule(Module &M);
+
+    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+      AU.setPreservesAll();
+    }
+  };
+
+  class StripDeadDebugInfo : public ModulePass {
+  public:
+    static char ID; // Pass identification, replacement for typeid
+    explicit StripDeadDebugInfo()
+      : ModulePass(ID) {}
 
     virtual bool runOnModule(Module &M);
 
@@ -78,27 +89,36 @@ namespace {
 }
 
 char StripSymbols::ID = 0;
-static RegisterPass<StripSymbols>
-X("strip", "Strip all symbols from a module");
+INITIALIZE_PASS(StripSymbols, "strip",
+                "Strip all symbols from a module", false, false);
 
 ModulePass *llvm::createStripSymbolsPass(bool OnlyDebugInfo) {
   return new StripSymbols(OnlyDebugInfo);
 }
 
 char StripNonDebugSymbols::ID = 0;
-static RegisterPass<StripNonDebugSymbols>
-Y("strip-nondebug", "Strip all symbols, except dbg symbols, from a module");
+INITIALIZE_PASS(StripNonDebugSymbols, "strip-nondebug",
+                "Strip all symbols, except dbg symbols, from a module",
+                false, false);
 
 ModulePass *llvm::createStripNonDebugSymbolsPass() {
   return new StripNonDebugSymbols();
 }
 
 char StripDebugDeclare::ID = 0;
-static RegisterPass<StripDebugDeclare>
-Z("strip-debug-declare", "Strip all llvm.dbg.declare intrinsics");
+INITIALIZE_PASS(StripDebugDeclare, "strip-debug-declare",
+                "Strip all llvm.dbg.declare intrinsics", false, false);
 
 ModulePass *llvm::createStripDebugDeclarePass() {
   return new StripDebugDeclare();
+}
+
+char StripDeadDebugInfo::ID = 0;
+INITIALIZE_PASS(StripDeadDebugInfo, "strip-dead-debug-info",
+                "Strip debug info for unused symbols", false, false);
+
+ModulePass *llvm::createStripDeadDebugInfoPass() {
+  return new StripDeadDebugInfo();
 }
 
 /// OnlyUsedBy - Return true if V is only used by Usr.
@@ -113,11 +133,11 @@ static bool OnlyUsedBy(Value *V, Value *Usr) {
 
 static void RemoveDeadConstant(Constant *C) {
   assert(C->use_empty() && "Constant is not dead!");
-  SmallPtrSet<Constant *, 4> Operands;
+  SmallPtrSet<Constant*, 4> Operands;
   for (unsigned i = 0, e = C->getNumOperands(); i != e; ++i)
     if (isa<DerivedType>(C->getOperand(i)->getType()) &&
         OnlyUsedBy(C->getOperand(i), C)) 
-      Operands.insert(C->getOperand(i));
+      Operands.insert(cast<Constant>(C->getOperand(i)));
   if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
     if (!GV->hasLocalLinkage()) return;   // Don't delete non static globals.
     GV->eraseFromParent();
@@ -127,7 +147,7 @@ static void RemoveDeadConstant(Constant *C) {
       C->destroyConstant();
 
   // If the constant referenced anything, see if we can delete it as well.
-  for (SmallPtrSet<Constant *, 4>::iterator OI = Operands.begin(),
+  for (SmallPtrSet<Constant*, 4>::iterator OI = Operands.begin(),
          OE = Operands.end(); OI != OE; ++OI)
     RemoveDeadConstant(*OI);
 }
@@ -149,7 +169,7 @@ static void StripSymtab(ValueSymbolTable &ST, bool PreserveDbgInfo) {
 // Strip the symbol table of its names.
 static void StripTypeSymtab(TypeSymbolTable &ST, bool PreserveDbgInfo) {
   for (TypeSymbolTable::iterator TI = ST.begin(), E = ST.end(); TI != E; ) {
-    if (PreserveDbgInfo && strncmp(TI->first.c_str(), "llvm.dbg", 8) == 0)
+    if (PreserveDbgInfo && StringRef(TI->first).startswith("llvm.dbg"))
       ++TI;
     else
       ST.remove(TI++);
@@ -203,168 +223,50 @@ static bool StripSymbolNames(Module &M, bool PreserveDbgInfo) {
 // llvm.dbg.region.end calls, and any globals they point to if now dead.
 static bool StripDebugInfo(Module &M) {
 
-  SmallPtrSet<const GlobalValue*, 8> llvmUsedValues;
-  findUsedValues(M.getGlobalVariable("llvm.used"), llvmUsedValues);
-  findUsedValues(M.getGlobalVariable("llvm.compiler.used"), llvmUsedValues);
-
-  DebugInfoFinder DbgFinder;
-  DbgFinder.processModule(M);
-
-  // These anchors use LinkOnce linkage so that the optimizer does not
-  // remove them accidently. Set InternalLinkage for all these debug
-  // info anchors.
-  for (DebugInfoFinder::iterator I = DbgFinder.compile_unit_begin(),
-         E = DbgFinder.compile_unit_end(); I != E; ++I)
-    (*I)->setLinkage(GlobalValue::InternalLinkage);
-  for (DebugInfoFinder::iterator I = DbgFinder.global_variable_begin(),
-         E = DbgFinder.global_variable_end(); I != E; ++I)
-    (*I)->setLinkage(GlobalValue::InternalLinkage);
-  for (DebugInfoFinder::iterator I = DbgFinder.subprogram_begin(),
-         E = DbgFinder.subprogram_end(); I != E; ++I)
-    (*I)->setLinkage(GlobalValue::InternalLinkage);
-
-
- // Delete all dbg variables.
-  for (Module::global_iterator I = M.global_begin(), E = M.global_end(); 
-       I != E; ++I) {
-    GlobalVariable *GV = dyn_cast<GlobalVariable>(I);
-    if (!GV) continue;
-    if (!GV->use_empty() && llvmUsedValues.count(I) == 0) {
-      if (GV->getName().startswith("llvm.dbg")) {
-        GV->replaceAllUsesWith(UndefValue::get(GV->getType()));
-      }
-    }
-  }
-
-  Function *FuncStart = M.getFunction("llvm.dbg.func.start");
-  Function *StopPoint = M.getFunction("llvm.dbg.stoppoint");
-  Function *RegionStart = M.getFunction("llvm.dbg.region.start");
-  Function *RegionEnd = M.getFunction("llvm.dbg.region.end");
-  Function *Declare = M.getFunction("llvm.dbg.declare");
-
-  std::vector<Constant*> DeadConstants;
+  bool Changed = false;
 
   // Remove all of the calls to the debugger intrinsics, and remove them from
   // the module.
-  if (FuncStart) {
-    while (!FuncStart->use_empty()) {
-      CallInst *CI = cast<CallInst>(FuncStart->use_back());
-      Value *Arg = CI->getOperand(1);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
-      CI->eraseFromParent();
-      if (Arg->use_empty())
-        if (Constant *C = dyn_cast<Constant>(Arg)) 
-          DeadConstants.push_back(C);
-    }
-    FuncStart->eraseFromParent();
-  }
-  if (StopPoint) {
-    while (!StopPoint->use_empty()) {
-      CallInst *CI = cast<CallInst>(StopPoint->use_back());
-      Value *Arg = CI->getOperand(3);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
-      CI->eraseFromParent();
-      if (Arg->use_empty())
-        if (Constant *C = dyn_cast<Constant>(Arg)) 
-          DeadConstants.push_back(C);
-    }
-    StopPoint->eraseFromParent();
-  }
-  if (RegionStart) {
-    while (!RegionStart->use_empty()) {
-      CallInst *CI = cast<CallInst>(RegionStart->use_back());
-      Value *Arg = CI->getOperand(1);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
-      CI->eraseFromParent();
-      if (Arg->use_empty())
-        if (Constant *C = dyn_cast<Constant>(Arg)) 
-          DeadConstants.push_back(C);
-    }
-    RegionStart->eraseFromParent();
-  }
-  if (RegionEnd) {
-    while (!RegionEnd->use_empty()) {
-      CallInst *CI = cast<CallInst>(RegionEnd->use_back());
-      Value *Arg = CI->getOperand(1);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
-      CI->eraseFromParent();
-      if (Arg->use_empty())
-        if (Constant *C = dyn_cast<Constant>(Arg)) 
-          DeadConstants.push_back(C);
-    }
-    RegionEnd->eraseFromParent();
-  }
-  if (Declare) {
+  if (Function *Declare = M.getFunction("llvm.dbg.declare")) {
     while (!Declare->use_empty()) {
       CallInst *CI = cast<CallInst>(Declare->use_back());
-      Value *Arg1 = CI->getOperand(1);
-      Value *Arg2 = CI->getOperand(2);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
       CI->eraseFromParent();
-      if (Arg1->use_empty()) {
-        if (Constant *C = dyn_cast<Constant>(Arg1)) 
-          DeadConstants.push_back(C);
-        else 
-          RecursivelyDeleteTriviallyDeadInstructions(Arg1);
-      }
-      if (Arg2->use_empty())
-        if (Constant *C = dyn_cast<Constant>(Arg2)) 
-          DeadConstants.push_back(C);
     }
     Declare->eraseFromParent();
+    Changed = true;
   }
 
-  // llvm.dbg.compile_units and llvm.dbg.subprograms are marked as linkonce
-  // but since we are removing all debug information, make them internal now.
-  // FIXME: Use private linkage maybe?
-  if (Constant *C = M.getNamedGlobal("llvm.dbg.compile_units"))
-    if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C))
-      GV->setLinkage(GlobalValue::InternalLinkage);
-
-  if (Constant *C = M.getNamedGlobal("llvm.dbg.subprograms"))
-    if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C))
-      GV->setLinkage(GlobalValue::InternalLinkage);
- 
-  if (Constant *C = M.getNamedGlobal("llvm.dbg.global_variables"))
-    if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C))
-      GV->setLinkage(GlobalValue::InternalLinkage);
-
-  // Delete all dbg variables.
-  for (Module::global_iterator I = M.global_begin(), E = M.global_end(); 
-       I != E; ++I) {
-    GlobalVariable *GV = dyn_cast<GlobalVariable>(I);
-    if (!GV) continue;
-    if (GV->use_empty() && llvmUsedValues.count(I) == 0
-        && (!GV->hasSection() 
-            || strcmp(GV->getSection().c_str(), "llvm.metadata") == 0))
-      DeadConstants.push_back(GV);
-  }
-
-  if (DeadConstants.empty())
-    return false;
-
-  // Delete any internal globals that were only used by the debugger intrinsics.
-  while (!DeadConstants.empty()) {
-    Constant *C = DeadConstants.back();
-    DeadConstants.pop_back();
-    if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
-      if (GV->hasLocalLinkage())
-        RemoveDeadConstant(GV);
+  if (Function *DbgVal = M.getFunction("llvm.dbg.value")) {
+    while (!DbgVal->use_empty()) {
+      CallInst *CI = cast<CallInst>(DbgVal->use_back());
+      CI->eraseFromParent();
     }
-    else
-      RemoveDeadConstant(C);
+    DbgVal->eraseFromParent();
+    Changed = true;
   }
 
-  // Remove all llvm.dbg types.
-  TypeSymbolTable &ST = M.getTypeSymbolTable();
-  for (TypeSymbolTable::iterator TI = ST.begin(), TE = ST.end(); TI != TE; ) {
-    if (!strncmp(TI->first.c_str(), "llvm.dbg.", 9))
-      ST.remove(TI++);
-    else 
-      ++TI;
+  for (Module::named_metadata_iterator NMI = M.named_metadata_begin(),
+         NME = M.named_metadata_end(); NMI != NME;) {
+    NamedMDNode *NMD = NMI;
+    ++NMI;
+    if (NMD->getName().startswith("llvm.dbg.")) {
+      NMD->eraseFromParent();
+      Changed = true;
+    }
   }
-  
-  return true;
+
+  for (Module::iterator MI = M.begin(), ME = M.end(); MI != ME; ++MI)
+    for (Function::iterator FI = MI->begin(), FE = MI->end(); FI != FE;
+         ++FI)
+      for (BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE;
+           ++BI) {
+        if (!BI->getDebugLoc().isUnknown()) {
+          Changed = true;
+          BI->setDebugLoc(DebugLoc());
+        }
+      }
+
+  return Changed;
 }
 
 bool StripSymbols::runOnModule(Module &M) {
@@ -387,8 +289,8 @@ bool StripDebugDeclare::runOnModule(Module &M) {
   if (Declare) {
     while (!Declare->use_empty()) {
       CallInst *CI = cast<CallInst>(Declare->use_back());
-      Value *Arg1 = CI->getOperand(1);
-      Value *Arg2 = CI->getOperand(2);
+      Value *Arg1 = CI->getArgOperand(0);
+      Value *Arg2 = CI->getArgOperand(1);
       assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
       CI->eraseFromParent();
       if (Arg1->use_empty()) {
@@ -404,25 +306,95 @@ bool StripDebugDeclare::runOnModule(Module &M) {
     Declare->eraseFromParent();
   }
 
-  // Delete all llvm.dbg.global_variables.
-  for (Module::global_iterator I = M.global_begin(), E = M.global_end(); 
-       I != E; ++I) {
-    GlobalVariable *GV = dyn_cast<GlobalVariable>(I);
-    if (!GV) continue;
-    if (GV->use_empty() && GV->getName().startswith("llvm.dbg.global_variable"))
-      DeadConstants.push_back(GV);
-  }
-
   while (!DeadConstants.empty()) {
     Constant *C = DeadConstants.back();
     DeadConstants.pop_back();
     if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
       if (GV->hasLocalLinkage())
         RemoveDeadConstant(GV);
-    }
-    else
+    } else
       RemoveDeadConstant(C);
   }
 
   return true;
+}
+
+/// getRealLinkageName - If special LLVM prefix that is used to inform the asm 
+/// printer to not emit usual symbol prefix before the symbol name is used then
+/// return linkage name after skipping this special LLVM prefix.
+static StringRef getRealLinkageName(StringRef LinkageName) {
+  char One = '\1';
+  if (LinkageName.startswith(StringRef(&One, 1)))
+    return LinkageName.substr(1);
+  return LinkageName;
+}
+
+bool StripDeadDebugInfo::runOnModule(Module &M) {
+  bool Changed = false;
+
+  // Debugging infomration is encoded in llvm IR using metadata. This is designed
+  // such a way that debug info for symbols preserved even if symbols are
+  // optimized away by the optimizer. This special pass removes debug info for 
+  // such symbols.
+
+  // llvm.dbg.gv keeps track of debug info for global variables.
+  if (NamedMDNode *NMD = M.getNamedMetadata("llvm.dbg.gv")) {
+    SmallVector<MDNode *, 8> MDs;
+    for (unsigned i = 0, e = NMD->getNumOperands(); i != e; ++i)
+      if (DIGlobalVariable(NMD->getOperand(i)).Verify())
+        MDs.push_back(NMD->getOperand(i));
+      else
+        Changed = true;
+    NMD->eraseFromParent();
+    NMD = NULL;
+
+    for (SmallVector<MDNode *, 8>::iterator I = MDs.begin(),
+           E = MDs.end(); I != E; ++I) {
+      GlobalVariable *GV = DIGlobalVariable(*I).getGlobal();
+      if (GV && M.getGlobalVariable(GV->getName(), true)) {
+        if (!NMD)
+          NMD = M.getOrInsertNamedMetadata("llvm.dbg.gv");
+        NMD->addOperand(*I);
+      }
+      else
+        Changed = true;
+    }
+  }
+
+  // llvm.dbg.sp keeps track of debug info for subprograms.
+  if (NamedMDNode *NMD = M.getNamedMetadata("llvm.dbg.sp")) {
+    SmallVector<MDNode *, 8> MDs;
+    for (unsigned i = 0, e = NMD->getNumOperands(); i != e; ++i)
+      if (DISubprogram(NMD->getOperand(i)).Verify())
+        MDs.push_back(NMD->getOperand(i));
+      else
+        Changed = true;
+    NMD->eraseFromParent();
+    NMD = NULL;
+
+    for (SmallVector<MDNode *, 8>::iterator I = MDs.begin(),
+           E = MDs.end(); I != E; ++I) {
+      bool FnIsLive = false;
+      if (Function *F = DISubprogram(*I).getFunction())
+        if (M.getFunction(F->getName()))
+          FnIsLive = true;
+      if (FnIsLive) {
+          if (!NMD)
+            NMD = M.getOrInsertNamedMetadata("llvm.dbg.sp");
+          NMD->addOperand(*I);
+      } else {
+        // Remove llvm.dbg.lv.fnname named mdnode which may have been used
+        // to hold debug info for dead function's local variables.
+        StringRef FName = DISubprogram(*I).getLinkageName();
+        if (FName.empty())
+          FName = DISubprogram(*I).getName();
+        if (NamedMDNode *LVNMD = 
+            M.getNamedMetadata(Twine("llvm.dbg.lv.", 
+                                     getRealLinkageName(FName)))) 
+          LVNMD->eraseFromParent();
+      }
+    }
+  }
+
+  return Changed;
 }

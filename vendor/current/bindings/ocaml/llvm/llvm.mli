@@ -39,16 +39,15 @@ type lltypehandle
     This type covers a wide range of subclasses. *)
 type llvalue
 
+(** Used to store users and usees of values. See the [llvm::Use] class. *)
+type lluse
+
 (** A basic block in LLVM IR. See the [llvm::BasicBlock] class. *)
 type llbasicblock
 
 (** Used to generate instructions in the LLVM IR. See the [llvm::LLVMBuilder]
     class. *)
 type llbuilder
-
-(** Used to provide a module to JIT or interpreter.
-    See the [llvm::ModuleProvider] class. *)
-type llmoduleprovider
 
 (** Used to efficiently handle large buffers of read-only binary data.
     See the [llvm::MemoryBuffer] class. *)
@@ -82,13 +81,18 @@ module Linkage : sig
     External
   | Available_externally
   | Link_once
+  | Link_once_odr
   | Weak
+  | Weak_odr
   | Appending
   | Internal
+  | Private
   | Dllimport
   | Dllexport
   | External_weak
   | Ghost
+  | Common
+  | Linker_private
 end
 
 (** The linker visibility of a global value, accessed with {!visibility} and
@@ -129,6 +133,18 @@ module Attribute : sig
   | Nest
   | Readnone
   | Readonly
+  | Noinline
+  | Alwaysinline
+  | Optsize
+  | Ssp
+  | Sspreq
+  | Alignment of int
+  | Nocapture
+  | Noredzone
+  | Noimplicitfloat
+  | Naked
+  | Inlinehint
+  | Stackalignment of int
 end
 
 (** The predicate for an integer comparison ([icmp]) instruction.
@@ -200,10 +216,15 @@ external create_context : unit -> llcontext = "llvm_create_context"
 
 (** [destroy_context ()] destroys a context. See the destructor
     [llvm::LLVMContext::~LLVMContext]. *)
-external dispose_context : unit -> llcontext = "llvm_dispose_context"
+external dispose_context : llcontext -> unit = "llvm_dispose_context"
 
 (** See the function [llvm::getGlobalContext]. *)
 external global_context : unit -> llcontext = "llvm_global_context"
+
+(** [mdkind_id context name] returns the MDKind ID that corresponds to the
+    name [name] in the context [context].  See the function
+    [llvm::LLVMContext::getMDKindID]. *)
+external mdkind_id : llcontext -> string -> int = "llvm_mdkind_id"
 
 
 (** {6 Modules} *)
@@ -253,9 +274,19 @@ external define_type_name : string -> lltype -> llmodule -> bool
 external delete_type_name : string -> llmodule -> unit
                           = "llvm_delete_type_name"
 
+(** [type_by_name m n] returns the type in the module [m] named [n], or [None]
+    if it does not exist. See the method [llvm::Module::getTypeByName]. *)
+external type_by_name : llmodule -> string -> lltype option
+                      = "llvm_type_by_name"
+
 (** [dump_module m] prints the .ll representation of the module [m] to standard
     error. See the method [llvm::Module::dump]. *)
 external dump_module : llmodule -> unit = "llvm_dump_module"
+
+(** [set_module_inline_asm m asm] sets the inline assembler for the module. See
+    the method [llvm::Module::setModuleInlineAsm]. *)
+external set_module_inline_asm : llmodule -> string -> unit
+                               = "llvm_set_module_inline_asm"
 
 
 (** {6 Types} *)
@@ -366,9 +397,10 @@ external struct_type : llcontext -> lltype array -> lltype
 external packed_struct_type : llcontext -> lltype array -> lltype
                             = "llvm_packed_struct_type"
 
-(** [element_types sty] returns the constituent types of the struct type [sty].
-    See the method [llvm::StructType::getElementType]. *)
-external element_types : lltype -> lltype array = "llvm_element_types"
+(** [struct_element_types sty] returns the constituent types of the struct type
+    [sty]. See the method [llvm::StructType::getElementType]. *)
+external struct_element_types : lltype -> lltype array
+                              = "llvm_struct_element_types"
 
 (** [is_packed sty] returns [true] if the structure type [sty] is packed,
     [false] otherwise. See the method [llvm::StructType::isPacked]. *)
@@ -467,6 +499,58 @@ external set_value_name : string -> llvalue -> unit = "llvm_set_value_name"
     error. See the method [llvm::Value::dump]. *)
 external dump_value : llvalue -> unit = "llvm_dump_value"
 
+(** [replace_all_uses_with old new] replaces all uses of the value [old]
+ * with the value [new]. See the method [llvm::Value::replaceAllUsesWith]. *)
+external replace_all_uses_with : llvalue -> llvalue -> unit
+                               = "LLVMReplaceAllUsesWith"
+
+
+(* {6 Uses} *)
+
+(** [use_begin v] returns the first position in the use list for the value [v].
+    [use_begin] and [use_succ] can e used to iterate over the use list in order.
+    See the method [llvm::Value::use_begin]. *)
+external use_begin : llvalue -> lluse option = "llvm_use_begin"
+
+(** [use_succ u] returns the use list position succeeding [u].
+    See the method [llvm::use_value_iterator::operator++]. *)
+external use_succ : lluse -> lluse option = "llvm_use_succ"
+
+(** [user u] returns the user of the use [u].
+    See the method [llvm::Use::getUser]. *)
+external user : lluse -> llvalue = "llvm_user"
+
+(** [used_value u] returns the usee of the use [u].
+    See the method [llvm::Use::getUsedValue]. *)
+external used_value : lluse -> llvalue = "llvm_used_value"
+
+(** [iter_uses f v] applies function [f] to each of the users of the value [v]
+    in order. Tail recursive. *)
+val iter_uses : (lluse -> unit) -> llvalue -> unit
+
+(** [fold_left_uses f init v] is [f (... (f init u1) ...) uN] where
+    [u1,...,uN] are the users of the value [v]. Tail recursive. *)
+val fold_left_uses : ('a -> lluse -> 'a) -> 'a -> llvalue -> 'a
+
+(** [fold_right_uses f v init] is [f u1 (... (f uN init) ...)] where
+    [u1,...,uN] are the users of the value [v]. Not tail recursive. *)
+val fold_right_uses : (lluse -> 'a -> 'a) -> llvalue -> 'a -> 'a
+
+
+(* {6 Users} *)
+
+(** [operand v i] returns the operand at index [i] for the value [v]. See the
+    method [llvm::User::getOperand]. *)
+external operand : llvalue -> int -> llvalue = "llvm_operand"
+
+(** [set_operand v i o] sets the operand of the value [v] at the index [i] to
+    the value [o].
+    See the method [llvm::User::setOperand]. *)
+external set_operand : llvalue -> int -> llvalue -> unit = "llvm_set_operand"
+
+(** [num_operands v] returns the number of operands for the value [v].
+    See the method [llvm::User::getNumOperands]. *)
+external num_operands : llvalue -> int = "llvm_num_operands"
 
 (** {7 Operations on constants of (mostly) any type} *)
 
@@ -482,6 +566,10 @@ external const_null : lltype -> llvalue = "LLVMConstNull"
     [ty]. See the method [llvm::Constant::getAllOnesValue]. *)
 external const_all_ones : (*int|vec*)lltype -> llvalue = "LLVMConstAllOnes"
 
+(** [const_pointer_null ty] returns the constant null (zero) pointer of the type
+    [ty]. See the method [llvm::ConstantPointerNull::get]. *)
+external const_pointer_null : lltype -> llvalue = "LLVMConstPointerNull"
+
 (** [undef ty] returns the undefined value of the type [ty].
     See the method [llvm::UndefValue::get]. *)
 external undef : lltype -> llvalue = "LLVMGetUndef"
@@ -493,6 +581,39 @@ external is_null : llvalue -> bool = "llvm_is_null"
 (** [is_undef v] returns [true] if the value [v] is an undefined value, [false]
     otherwise. Similar to [llvm::isa<UndefValue>]. *)
 external is_undef : llvalue -> bool = "llvm_is_undef"
+
+
+(** {7 Operations on instructions} *)
+
+(** [has_metadata i] returns whether or not the instruction [i] has any
+    metadata attached to it. See the function
+    [llvm::Instruction::hasMetadata]. *)
+external has_metadata : llvalue -> bool = "llvm_has_metadata"
+
+(** [metadata i kind] optionally returns the metadata associated with the
+    kind [kind] in the instruction [i] See the function
+    [llvm::Instruction::getMetadata]. *)
+external metadata : llvalue -> int -> llvalue option = "llvm_metadata"
+
+(** [set_metadata i kind md] sets the metadata [md] of kind [kind] in the
+    instruction [i]. See the function [llvm::Instruction::setMetadata]. *)
+external set_metadata : llvalue -> int -> llvalue -> unit = "llvm_set_metadata"
+
+(** [clear_metadata i kind] clears the metadata of kind [kind] in the
+    instruction [i]. See the function [llvm::Instruction::setMetadata]. *)
+external clear_metadata : llvalue -> int -> unit = "llvm_clear_metadata"
+
+
+(** {7 Operations on metadata} *)
+
+(** [mdstring c s] returns the MDString of the string [s] in the context [c].
+    See the method [llvm::MDNode::get]. *)
+external mdstring : llcontext -> string -> llvalue = "llvm_mdstring"
+
+(** [mdnode c elts] returns the MDNode containing the values [elts] in the
+    context [c].
+    See the method [llvm::MDNode::get]. *)
+external mdnode : llcontext -> llvalue array -> llvalue = "llvm_mdnode"
 
 
 (** {7 Operations on scalar constants} *)
@@ -581,6 +702,16 @@ external size_of : lltype -> llvalue = "LLVMSizeOf"
     See the method [llvm::ConstantExpr::getNeg]. *)
 external const_neg : llvalue -> llvalue = "LLVMConstNeg"
 
+(** [const_nsw_neg c] returns the arithmetic negation of the constant [c] with
+    no signed wrapping. The result is undefined if the negation overflows.
+    See the method [llvm::ConstantExpr::getNSWNeg]. *)
+external const_nsw_neg : llvalue -> llvalue = "LLVMConstNSWNeg"
+
+(** [const_nuw_neg c] returns the arithmetic negation of the constant [c] with
+    no unsigned wrapping. The result is undefined if the negation overflows.
+    See the method [llvm::ConstantExpr::getNUWNeg]. *)
+external const_nuw_neg : llvalue -> llvalue = "LLVMConstNUWNeg"
+
 (** [const_fneg c] returns the arithmetic negation of the constant float [c].
     See the method [llvm::ConstantExpr::getFNeg]. *)
 external const_fneg : llvalue -> llvalue = "LLVMConstFNeg"
@@ -598,6 +729,11 @@ external const_add : llvalue -> llvalue -> llvalue = "LLVMConstAdd"
     See the method [llvm::ConstantExpr::getNSWAdd]. *)
 external const_nsw_add : llvalue -> llvalue -> llvalue = "LLVMConstNSWAdd"
 
+(** [const_nuw_add c1 c2] returns the constant sum of two constants with no
+    unsigned wrapping. The result is undefined if the sum overflows.
+    See the method [llvm::ConstantExpr::getNSWAdd]. *)
+external const_nuw_add : llvalue -> llvalue -> llvalue = "LLVMConstNUWAdd"
+
 (** [const_fadd c1 c2] returns the constant sum of two constant floats.
     See the method [llvm::ConstantExpr::getFAdd]. *)
 external const_fadd : llvalue -> llvalue -> llvalue = "LLVMConstFAdd"
@@ -606,6 +742,16 @@ external const_fadd : llvalue -> llvalue -> llvalue = "LLVMConstFAdd"
     constants. See the method [llvm::ConstantExpr::getSub]. *)
 external const_sub : llvalue -> llvalue -> llvalue = "LLVMConstSub"
 
+(** [const_nsw_sub c1 c2] returns the constant difference of two constants with
+    no signed wrapping. The result is undefined if the sum overflows.
+    See the method [llvm::ConstantExpr::getNSWSub]. *)
+external const_nsw_sub : llvalue -> llvalue -> llvalue = "LLVMConstNSWSub"
+
+(** [const_nuw_sub c1 c2] returns the constant difference of two constants with
+    no unsigned wrapping. The result is undefined if the sum overflows.
+    See the method [llvm::ConstantExpr::getNSWSub]. *)
+external const_nuw_sub : llvalue -> llvalue -> llvalue = "LLVMConstNUWSub"
+
 (** [const_fsub c1 c2] returns the constant difference, [c1 - c2], of two
     constant floats. See the method [llvm::ConstantExpr::getFSub]. *)
 external const_fsub : llvalue -> llvalue -> llvalue = "LLVMConstFSub"
@@ -613,6 +759,16 @@ external const_fsub : llvalue -> llvalue -> llvalue = "LLVMConstFSub"
 (** [const_mul c1 c2] returns the constant product of two constants.
     See the method [llvm::ConstantExpr::getMul]. *)
 external const_mul : llvalue -> llvalue -> llvalue = "LLVMConstMul"
+
+(** [const_nsw_mul c1 c2] returns the constant product of two constants with
+    no signed wrapping. The result is undefined if the sum overflows.
+    See the method [llvm::ConstantExpr::getNSWMul]. *)
+external const_nsw_mul : llvalue -> llvalue -> llvalue = "LLVMConstNSWMul"
+
+(** [const_nuw_mul c1 c2] returns the constant product of two constants with
+    no unsigned wrapping. The result is undefined if the sum overflows.
+    See the method [llvm::ConstantExpr::getNSWMul]. *)
+external const_nuw_mul : llvalue -> llvalue -> llvalue = "LLVMConstNUWMul"
 
 (** [const_fmul c1 c2] returns the constant product of two constants floats.
     See the method [llvm::ConstantExpr::getFMul]. *)
@@ -825,7 +981,7 @@ external const_insertelement : llvalue -> llvalue -> llvalue -> llvalue
                              = "LLVMConstInsertElement"
 
 (** [const_shufflevector a b mask] returns a constant [shufflevector].
-    See the LLVM Language Reference for details on the [sufflevector]
+    See the LLVM Language Reference for details on the [shufflevector]
     instruction.
     See the method [llvm::ConstantExpr::getShuffleVector]. *)
 external const_shufflevector : llvalue -> llvalue -> llvalue -> llvalue
@@ -842,6 +998,16 @@ external const_extractvalue : llvalue -> int array -> llvalue
     of the aggregate. See the method [llvm::ConstantExpr::getInsertValue]. *)
 external const_insertvalue : llvalue -> llvalue -> int array -> llvalue
                            = "llvm_const_insertvalue"
+
+(** [const_inline_asm ty asm con side align] inserts a inline assembly string.
+    See the method [llvm::InlineAsm::get]. *)
+external const_inline_asm : lltype -> string -> string -> bool -> bool ->
+                            llvalue
+                          = "llvm_const_inline_asm"
+
+(** [block_address f bb] returns the address of the basic block [bb] in the
+    function [f]. See the method [llvm::BasicBlock::get]. *)
+external block_address : llvalue -> llbasicblock -> llvalue = "LLVMBlockAddress"
 
 
 (** {7 Operations on global variables, functions, and aliases (globals)} *)
@@ -892,18 +1058,35 @@ external set_alignment : int -> llvalue -> unit = "llvm_set_alignment"
 (** {7 Operations on global variables} *)
 
 (** [declare_global ty name m] returns a new global variable of type [ty] and
-    with name [name] in module [m]. If such a global variable already exists,
-    it is returned. If the type of the existing global differs, then a bitcast
-    to [ty] is returned. *)
+    with name [name] in module [m] in the default address space (0). If such a
+    global variable already exists, it is returned. If the type of the existing
+    global differs, then a bitcast to [ty] is returned. *)
 external declare_global : lltype -> string -> llmodule -> llvalue
                         = "llvm_declare_global"
 
+(** [declare_qualified_global ty name addrspace m] returns a new global variable
+    of type [ty] and with name [name] in module [m] in the address space
+    [addrspace]. If such a global variable already exists, it is returned. If
+    the type of the existing global differs, then a bitcast to [ty] is
+    returned. *)
+external declare_qualified_global : lltype -> string -> int -> llmodule ->
+                                    llvalue
+                                  = "llvm_declare_qualified_global"
+
 (** [define_global name init m] returns a new global with name [name] and
-    initializer [init] in module [m]. If the named global already exists, it is
-    renamed.
+    initializer [init] in module [m] in the default address space (0). If the
+    named global already exists, it is renamed.
     See the constructor of [llvm::GlobalVariable]. *)
 external define_global : string -> llvalue -> llmodule -> llvalue
                        = "llvm_define_global"
+
+(** [define_qualified_global name init addrspace m] returns a new global with
+    name [name] and initializer [init] in module [m] in the address space
+    [addrspace]. If the named global already exists, it is renamed.
+    See the constructor of [llvm::GlobalVariable]. *)
+external define_qualified_global : string -> llvalue -> int -> llmodule ->
+                                   llvalue
+                                 = "llvm_define_qualified_global"
 
 (** [lookup_global name m] returns [Some g] if a global variable with name
     [name] exists in module [m]. If no such global exists, returns [None].
@@ -991,6 +1174,15 @@ external is_thread_local : llvalue -> bool = "llvm_is_thread_local"
     [c] is [true] and not otherwise.
     See the method [llvm::GlobalVariable::setThreadLocal]. *)
 external set_thread_local : bool -> llvalue -> unit = "llvm_set_thread_local"
+
+
+(** {7 Operations on aliases} *)
+
+(** [add_alias m t a n] inserts an alias in the module [m] with the type [t] and
+    the aliasee [a] with the name [n].
+    See the constructor for [llvm::GlobalAlias]. *)
+external add_alias : llmodule -> lltype -> llvalue -> string -> llvalue
+                   = "llvm_add_alias"
 
 
 (** {7 Operations on functions} *)
@@ -1085,13 +1277,11 @@ external set_gc : string option -> llvalue -> unit = "llvm_set_gc"
 
 (** [add_function_attr f a] adds attribute [a] to the return type of function
     [f]. *)
-external add_function_attr : llvalue -> Attribute.t -> unit
-                           = "llvm_add_function_attr"
+val add_function_attr : llvalue -> Attribute.t -> unit
 
 (** [remove_function_attr f a] removes attribute [a] from the return type of
     function [f]. *)
-external remove_function_attr : llvalue -> Attribute.t -> unit
-                              = "llvm_remove_function_attr"
+val remove_function_attr : llvalue -> Attribute.t -> unit
 
 (** {7 Operations on params} *)
 
@@ -1146,11 +1336,10 @@ val rev_iter_params : (llvalue -> unit) -> llvalue -> unit
 val fold_right_params : (llvalue -> 'a -> 'a) -> llvalue -> 'a -> 'a
 
 (** [add_param p a] adds attribute [a] to parameter [p]. *)
-external add_param_attr : llvalue -> Attribute.t -> unit = "llvm_add_param_attr"
+val add_param_attr : llvalue -> Attribute.t -> unit
 
 (** [remove_param_attr p a] removes attribute [a] from parameter [p]. *)
-external remove_param_attr : llvalue -> Attribute.t -> unit
-                           = "llvm_remove_param_attr"
+val remove_param_attr : llvalue -> Attribute.t -> unit
 
 (** [set_param_alignment p a] set the alignment of parameter [p] to [a]. *)
 external set_param_alignment : llvalue -> int -> unit
@@ -1302,14 +1491,12 @@ external set_instruction_call_conv: int -> llvalue -> unit
 (** [add_instruction_param_attr ci i a] adds attribute [a] to the [i]th
     parameter of the call or invoke instruction [ci]. [i]=0 denotes the return
     value. *)
-external add_instruction_param_attr : llvalue -> int -> Attribute.t -> unit
-  = "llvm_add_instruction_param_attr"
+val add_instruction_param_attr : llvalue -> int -> Attribute.t -> unit
 
 (** [remove_instruction_param_attr ci i a] removes attribute [a] from the
     [i]th parameter of the call or invoke instruction [ci]. [i]=0 denotes the
     return value. *)
-external remove_instruction_param_attr : llvalue -> int -> Attribute.t -> unit
-  = "llvm_remove_instruction_param_attr"
+val remove_instruction_param_attr : llvalue -> int -> Attribute.t -> unit
 
 (** {Operations on call instructions (only)} *)
 
@@ -1382,6 +1569,30 @@ external insertion_block : llbuilder -> llbasicblock = "llvm_insertion_block"
 external insert_into_builder : llvalue -> string -> llbuilder -> unit
                              = "llvm_insert_into_builder"
 
+(** {7 Metadata} *)
+
+(** [set_current_debug_location b md] sets the current debug location [md] in
+    the builder [b].
+    See the method [llvm::IRBuilder::SetDebugLocation]. *)
+external set_current_debug_location : llbuilder -> llvalue -> unit
+                                    = "llvm_set_current_debug_location"
+
+(** [clear_current_debug_location b] clears the current debug location in the
+    builder [b]. *)
+external clear_current_debug_location : llbuilder -> unit
+                                      = "llvm_clear_current_debug_location"
+
+(** [current_debug_location b] returns the current debug location, or None
+    if none is currently set.
+    See the method [llvm::IRBuilder::GetDebugLocation]. *)
+external current_debug_location : llbuilder -> llvalue option
+                                = "llvm_current_debug_location"
+
+(** [set_inst_debug_location b i] sets the current debug location of the builder
+    [b] to the instruction [i].
+    See the method [llvm::IRBuilder::SetInstDebugLocation]. *)
+external set_inst_debug_location : llbuilder -> llvalue -> unit
+                                 = "llvm_set_inst_debug_location"
 
 (** {7 Terminators} *)
 
@@ -1405,13 +1616,13 @@ external build_aggregate_ret : llvalue array -> llbuilder -> llvalue
                              = "llvm_build_aggregate_ret"
 
 (** [build_br bb b] creates a
-    [b %bb]
+    [br %bb]
     instruction at the position specified by the instruction builder [b].
     See the method [llvm::LLVMBuilder::CreateBr]. *)
 external build_br : llbasicblock -> llbuilder -> llvalue = "llvm_build_br"
 
 (** [build_cond_br cond tbb fbb b] creates a
-    [b %cond, %tbb, %fbb]
+    [br %cond, %tbb, %fbb]
     instruction at the position specified by the instruction builder [b].
     See the method [llvm::LLVMBuilder::CreateCondBr]. *)
 external build_cond_br : llvalue -> llbasicblock -> llbasicblock -> llbuilder ->
@@ -1430,6 +1641,20 @@ external build_switch : llvalue -> llbasicblock -> int -> llbuilder -> llvalue
     See the method [llvm::SwitchInst::addCase]. **)
 external add_case : llvalue -> llvalue -> llbasicblock -> unit
                   = "llvm_add_case"
+
+(** [build_indirect_br addr count b] creates a
+    [indirectbr %addr]
+    instruction at the position specified by the instruction builder [b] with
+    space reserved for [count] destinations.
+    See the method [llvm::LLVMBuilder::CreateIndirectBr]. *)
+external build_indirect_br : llvalue -> int -> llbuilder -> llvalue
+                           = "llvm_build_indirect_br"
+
+(** [add_destination br bb] adds the basic block [bb] as a possible branch
+    location for the indirectbr instruction [br].
+    See the method [llvm::IndirectBrInst::addDestination]. **)
+external add_destination : llvalue -> llbasicblock -> unit
+                         = "llvm_add_destination"
 
 (** [build_invoke fn args tobb unwindbb name b] creates an
     [%name = invoke %fn(args) to %tobb unwind %unwindbb]
@@ -1461,12 +1686,19 @@ external build_unreachable : llbuilder -> llvalue = "llvm_build_unreachable"
 external build_add : llvalue -> llvalue -> string -> llbuilder -> llvalue
                    = "llvm_build_add"
 
-(** [build_nswadd x y name b] creates a
+(** [build_nsw_add x y name b] creates a
     [%name = nsw add %x, %y]
     instruction at the position specified by the instruction builder [b].
     See the method [llvm::LLVMBuilder::CreateNSWAdd]. *)
 external build_nsw_add : llvalue -> llvalue -> string -> llbuilder -> llvalue
                       = "llvm_build_nsw_add"
+
+(** [build_nuw_add x y name b] creates a
+    [%name = nuw add %x, %y]
+    instruction at the position specified by the instruction builder [b].
+    See the method [llvm::LLVMBuilder::CreateNUWAdd]. *)
+external build_nuw_add : llvalue -> llvalue -> string -> llbuilder -> llvalue
+                      = "llvm_build_nuw_add"
 
 (** [build_fadd x y name b] creates a
     [%name = fadd %x, %y]
@@ -1482,6 +1714,20 @@ external build_fadd : llvalue -> llvalue -> string -> llbuilder -> llvalue
 external build_sub : llvalue -> llvalue -> string -> llbuilder -> llvalue
                    = "llvm_build_sub"
 
+(** [build_nsw_sub x y name b] creates a
+    [%name = nsw sub %x, %y]
+    instruction at the position specified by the instruction builder [b].
+    See the method [llvm::LLVMBuilder::CreateNSWSub]. *)
+external build_nsw_sub : llvalue -> llvalue -> string -> llbuilder -> llvalue
+                       = "llvm_build_nsw_sub"
+
+(** [build_nuw_sub x y name b] creates a
+    [%name = nuw sub %x, %y]
+    instruction at the position specified by the instruction builder [b].
+    See the method [llvm::LLVMBuilder::CreateNUWSub]. *)
+external build_nuw_sub : llvalue -> llvalue -> string -> llbuilder -> llvalue
+                       = "llvm_build_nuw_sub"
+
 (** [build_fsub x y name b] creates a
     [%name = fsub %x, %y]
     instruction at the position specified by the instruction builder [b].
@@ -1495,6 +1741,20 @@ external build_fsub : llvalue -> llvalue -> string -> llbuilder -> llvalue
     See the method [llvm::LLVMBuilder::CreateMul]. *)
 external build_mul : llvalue -> llvalue -> string -> llbuilder -> llvalue
                    = "llvm_build_mul"
+
+(** [build_nsw_mul x y name b] creates a
+    [%name = nsw mul %x, %y]
+    instruction at the position specified by the instruction builder [b].
+    See the method [llvm::LLVMBuilder::CreateNSWMul]. *)
+external build_nsw_mul : llvalue -> llvalue -> string -> llbuilder -> llvalue
+                       = "llvm_build_nsw_mul"
+
+(** [build_nuw_mul x y name b] creates a
+    [%name = nuw mul %x, %y]
+    instruction at the position specified by the instruction builder [b].
+    See the method [llvm::LLVMBuilder::CreateNUWMul]. *)
+external build_nuw_mul : llvalue -> llvalue -> string -> llbuilder -> llvalue
+                       = "llvm_build_nuw_mul"
 
 (** [build_fmul x y name b] creates a
     [%name = fmul %x, %y]
@@ -1602,6 +1862,30 @@ external build_xor : llvalue -> llvalue -> string -> llbuilder -> llvalue
 external build_neg : llvalue -> string -> llbuilder -> llvalue
                    = "llvm_build_neg"
 
+(** [build_nsw_neg x name b] creates a
+    [%name = nsw sub 0, %x]
+    instruction at the position specified by the instruction builder [b].
+    [-0.0] is used for floating point types to compute the correct sign.
+    See the method [llvm::LLVMBuilder::CreateNeg]. *)
+external build_nsw_neg : llvalue -> string -> llbuilder -> llvalue
+                       = "llvm_build_nsw_neg"
+
+(** [build_nuw_neg x name b] creates a
+    [%name = nuw sub 0, %x]
+    instruction at the position specified by the instruction builder [b].
+    [-0.0] is used for floating point types to compute the correct sign.
+    See the method [llvm::LLVMBuilder::CreateNeg]. *)
+external build_nuw_neg : llvalue -> string -> llbuilder -> llvalue
+                       = "llvm_build_nuw_neg"
+
+(** [build_fneg x name b] creates a
+    [%name = fsub 0, %x]
+    instruction at the position specified by the instruction builder [b].
+    [-0.0] is used for floating point types to compute the correct sign.
+    See the method [llvm::LLVMBuilder::CreateFNeg]. *)
+external build_fneg : llvalue -> string -> llbuilder -> llvalue
+                    = "llvm_build_fneg"
+
 (** [build_xor x name b] creates a
     [%name = xor %x, -1]
     instruction at the position specified by the instruction builder [b].
@@ -1612,20 +1896,6 @@ external build_not : llvalue -> string -> llbuilder -> llvalue
 
 
 (** {7 Memory} *)
-
-(** [build_malloc ty name b] creates a
-    [%name = malloc %ty]
-    instruction at the position specified by the instruction builder [b].
-    See the method [llvm::LLVMBuilder::CreateAlloca]. *)
-external build_malloc : lltype -> string -> llbuilder -> llvalue
-                      = "llvm_build_malloc"
-
-(** [build_array_malloc ty n name b] creates a
-    [%name = malloc %ty, %n]
-    instruction at the position specified by the instruction builder [b].
-    See the method [llvm::LLVMBuilder::CreateMalloc]. *)
-external build_array_malloc : lltype -> llvalue -> string -> llbuilder ->
-                              llvalue = "llvm_build_array_malloc"
 
 (** [build_alloca ty name b] creates a
     [%name = alloca %ty]
@@ -1640,12 +1910,6 @@ external build_alloca : lltype -> string -> llbuilder -> llvalue
     See the method [llvm::LLVMBuilder::CreateAlloca]. *)
 external build_array_alloca : lltype -> llvalue -> string -> llbuilder ->
                               llvalue = "llvm_build_array_alloca"
-
-(** [build_free v b] creates a
-    [free %v]
-    instruction at the position specified by the instruction builder [b].
-    See the method [llvm::LLVMBuilder::CreateFree]. *)
-external build_free : llvalue -> llbuilder -> llvalue = "llvm_build_free"
 
 (** [build_load v name b] creates a
     [%name = load %v]
@@ -1923,20 +2187,6 @@ external build_is_not_null : llvalue -> string -> llbuilder -> llvalue
 external build_ptrdiff : llvalue -> llvalue -> string -> llbuilder -> llvalue
                        = "llvm_build_ptrdiff"
 
-(** {6 Module providers} *)
-
-module ModuleProvider : sig
-  (** [create_module_provider m] encapsulates [m] in a module provider and takes
-      ownership of the module. See the constructor
-      [llvm::ExistingModuleProvider::ExistingModuleProvider]. *)
-  external create : llmodule -> llmoduleprovider
-                  = "LLVMCreateModuleProviderForExistingModule"
-  
-  (** [dispose_module_provider mp] destroys the module provider [mp] as well as
-      the contained module. *)
-  external dispose : llmoduleprovider -> unit = "llvm_dispose_module_provider"
-end
-
 
 (** {6 Memory buffers} *)
 
@@ -1968,12 +2218,12 @@ module PassManager : sig
       See the constructor of [llvm::PassManager]. *)
   external create : unit -> [ `Module ] t = "llvm_passmanager_create"
   
-  (** [PassManager.create_function mp] constructs a new function-by-function
-      pass pipeline over the module provider [mp]. It does not take ownership of
-      [mp]. This type of pipeline is suitable for code generation and JIT
-      compilation tasks.
+  (** [PassManager.create_function m] constructs a new function-by-function
+      pass pipeline over the module [m]. It does not take ownership of [m].
+      This type of pipeline is suitable for code generation and JIT compilation
+      tasks.
       See the constructor of [llvm::FunctionPassManager]. *)
-  external create_function : llmoduleprovider -> [ `Function ] t
+  external create_function : llmodule -> [ `Function ] t
                            = "LLVMCreateFunctionPassManager"
   
   (** [run_module m pm] initializes, executes on the module [m], and finalizes
@@ -2003,7 +2253,7 @@ module PassManager : sig
   external finalize : [ `Function ] t -> bool = "llvm_passmanager_finalize"
   
   (** Frees the memory of a pass pipeline. For function pipelines, does not free
-      the module provider.
+      the module.
       See the destructor of [llvm::BasePassManager]. *)
   external dispose : [< any ] t -> unit = "llvm_passmanager_dispose"
 end

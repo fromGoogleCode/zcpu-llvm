@@ -17,16 +17,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Target/TargetData.h"
-#include "llvm/Module.h"
-#include "llvm/DerivedTypes.h"
 #include "llvm/Constants.h"
+#include "llvm/DerivedTypes.h"
+#include "llvm/Module.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/System/Mutex.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/StringExtras.h"
 #include <algorithm>
 #include <cstdlib>
 using namespace llvm;
@@ -34,8 +34,7 @@ using namespace llvm;
 // Handle the Pass registration stuff necessary to use TargetData's.
 
 // Register the default SparcV9 implementation...
-static RegisterPass<TargetData> X("targetdata", "Target Data Layout", false, 
-                                  true);
+INITIALIZE_PASS(TargetData, "targetdata", "Target Data Layout", false, true);
 char TargetData::ID = 0;
 
 //===----------------------------------------------------------------------===//
@@ -98,8 +97,8 @@ unsigned StructLayout::getElementContainingOffset(uint64_t Offset) const {
 //===----------------------------------------------------------------------===//
 
 TargetAlignElem
-TargetAlignElem::get(AlignTypeEnum align_type, unsigned char abi_align,
-                     unsigned char pref_align, uint32_t bit_width) {
+TargetAlignElem::get(AlignTypeEnum align_type, unsigned abi_align,
+                     unsigned pref_align, uint32_t bit_width) {
   assert(abi_align <= pref_align && "Preferred alignment worse than ABI!");
   TargetAlignElem retval;
   retval.AlignType = align_type;
@@ -117,14 +116,6 @@ TargetAlignElem::operator==(const TargetAlignElem &rhs) const {
           && TypeBitWidth == rhs.TypeBitWidth);
 }
 
-std::ostream &
-TargetAlignElem::dump(std::ostream &os) const {
-  return os << AlignType
-            << TypeBitWidth
-            << ":" << (int) (ABIAlign * 8)
-            << ":" << (int) (PrefAlign * 8);
-}
-
 const TargetAlignElem TargetData::InvalidAlignmentElem =
                 TargetAlignElem::get((AlignTypeEnum) -1, 0, 0, 0);
 
@@ -132,50 +123,18 @@ const TargetAlignElem TargetData::InvalidAlignmentElem =
 //                       TargetData Class Implementation
 //===----------------------------------------------------------------------===//
 
-/*!
- A TargetDescription string consists of a sequence of hyphen-delimited
- specifiers for target endianness, pointer size and alignments, and various
- primitive type sizes and alignments. A typical string looks something like:
- <br><br>
- "E-p:32:32:32-i1:8:8-i8:8:8-i32:32:32-i64:32:64-f32:32:32-f64:32:64"
- <br><br>
- (note: this string is not fully specified and is only an example.)
- \p
- Alignments come in two flavors: ABI and preferred. ABI alignment (abi_align,
- below) dictates how a type will be aligned within an aggregate and when used
- as an argument.  Preferred alignment (pref_align, below) determines a type's
- alignment when emitted as a global.
- \p
- Specifier string details:
- <br><br>
- <i>[E|e]</i>: Endianness. "E" specifies a big-endian target data model, "e"
- specifies a little-endian target data model.
- <br><br>
- <i>p:@verbatim<size>:<abi_align>:<pref_align>@endverbatim</i>: Pointer size, 
- ABI and preferred alignment.
- <br><br>
- <i>@verbatim<type><size>:<abi_align>:<pref_align>@endverbatim</i>: Numeric type
- alignment. Type is
- one of <i>i|f|v|a</i>, corresponding to integer, floating point, vector, or
- aggregate.  Size indicates the size, e.g., 32 or 64 bits.
- \p
- The default string, fully specified, is:
- <br><br>
- "E-p:64:64:64-a0:0:8-f32:32:32-f64:64:64"
- "-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64"
- "-v64:64:64-v128:128:128"
- <br><br>
- Note that in the case of aggregates, 0 is the default ABI and preferred
- alignment. This is a special case, where the aggregate's computed worst-case
- alignment will be used.
- */ 
-void TargetData::init(const std::string &TargetDescription) {
-  std::string temp = TargetDescription;
-  
+/// getInt - Get an integer ignoring errors.
+static unsigned getInt(StringRef R) {
+  unsigned Result = 0;
+  R.getAsInteger(10, Result);
+  return Result;
+}
+
+void TargetData::init(StringRef Desc) {
   LayoutMap = 0;
   LittleEndian = false;
   PointerMemSize = 8;
-  PointerABIAlign   = 8;
+  PointerABIAlign = 8;
   PointerPrefAlign = PointerABIAlign;
 
   // Default alignments
@@ -190,11 +149,21 @@ void TargetData::init(const std::string &TargetDescription) {
   setAlignment(VECTOR_ALIGN,   16, 16, 128); // v16i8, v8i16, v4i32, ...
   setAlignment(AGGREGATE_ALIGN, 0,  8,  0);  // struct
 
-  while (!temp.empty()) {
-    std::string token = getToken(temp, "-");
-    std::string arg0 = getToken(token, ":");
-    const char *p = arg0.c_str();
-    switch(*p) {
+  while (!Desc.empty()) {
+    std::pair<StringRef, StringRef> Split = Desc.split('-');
+    StringRef Token = Split.first;
+    Desc = Split.second;
+    
+    if (Token.empty())
+      continue;
+    
+    Split = Token.split(':');
+    StringRef Specifier = Split.first;
+    Token = Split.second;
+    
+    assert(!Specifier.empty() && "Can't be empty here");
+    
+    switch (Specifier[0]) {
     case 'E':
       LittleEndian = false;
       break;
@@ -202,9 +171,12 @@ void TargetData::init(const std::string &TargetDescription) {
       LittleEndian = true;
       break;
     case 'p':
-      PointerMemSize = atoi(getToken(token,":").c_str()) / 8;
-      PointerABIAlign = atoi(getToken(token,":").c_str()) / 8;
-      PointerPrefAlign = atoi(getToken(token,":").c_str()) / 8;
+      Split = Token.split(':');
+      PointerMemSize = getInt(Split.first) / 8;
+      Split = Split.second.split(':');
+      PointerABIAlign = getInt(Split.first) / 8;
+      Split = Split.second.split(':');
+      PointerPrefAlign = getInt(Split.first) / 8;
       if (PointerPrefAlign == 0)
         PointerPrefAlign = PointerABIAlign;
       break;
@@ -213,36 +185,60 @@ void TargetData::init(const std::string &TargetDescription) {
     case 'f':
     case 'a':
     case 's': {
-      AlignTypeEnum align_type = STACK_ALIGN; // Dummy init, silence warning
-      switch(*p) {
-        case 'i': align_type = INTEGER_ALIGN; break;
-        case 'v': align_type = VECTOR_ALIGN; break;
-        case 'f': align_type = FLOAT_ALIGN; break;
-        case 'a': align_type = AGGREGATE_ALIGN; break;
-        case 's': align_type = STACK_ALIGN; break;
+      AlignTypeEnum AlignType;
+      switch (Specifier[0]) {
+      default:
+      case 'i': AlignType = INTEGER_ALIGN; break;
+      case 'v': AlignType = VECTOR_ALIGN; break;
+      case 'f': AlignType = FLOAT_ALIGN; break;
+      case 'a': AlignType = AGGREGATE_ALIGN; break;
+      case 's': AlignType = STACK_ALIGN; break;
       }
-      uint32_t size = (uint32_t) atoi(++p);
-      unsigned char abi_align = atoi(getToken(token, ":").c_str()) / 8;
-      unsigned char pref_align = atoi(getToken(token, ":").c_str()) / 8;
-      if (pref_align == 0)
-        pref_align = abi_align;
-      setAlignment(align_type, abi_align, pref_align, size);
+      unsigned Size = getInt(Specifier.substr(1));
+      Split = Token.split(':');
+      unsigned ABIAlign = getInt(Split.first) / 8;
+      
+      Split = Split.second.split(':');
+      unsigned PrefAlign = getInt(Split.first) / 8;
+      if (PrefAlign == 0)
+        PrefAlign = ABIAlign;
+      setAlignment(AlignType, ABIAlign, PrefAlign, Size);
       break;
     }
+    case 'n':  // Native integer types.
+      Specifier = Specifier.substr(1);
+      do {
+        if (unsigned Width = getInt(Specifier))
+          LegalIntWidths.push_back(Width);
+        Split = Token.split(':');
+        Specifier = Split.first;
+        Token = Split.second;
+      } while (!Specifier.empty() || !Token.empty());
+      break;
+        
     default:
       break;
     }
   }
 }
 
+/// Default ctor.
+///
+/// @note This has to exist, because this is a pass, but it should never be
+/// used.
+TargetData::TargetData() : ImmutablePass(ID) {
+  report_fatal_error("Bad TargetData ctor used.  "
+                    "Tool did not specify a TargetData to use?");
+}
+
 TargetData::TargetData(const Module *M) 
-  : ImmutablePass(&ID) {
+  : ImmutablePass(ID) {
   init(M->getDataLayout());
 }
 
 void
-TargetData::setAlignment(AlignTypeEnum align_type, unsigned char abi_align,
-                         unsigned char pref_align, uint32_t bit_width) {
+TargetData::setAlignment(AlignTypeEnum align_type, unsigned abi_align,
+                         unsigned pref_align, uint32_t bit_width) {
   assert(abi_align <= pref_align && "Preferred alignment worse than ABI!");
   for (unsigned i = 0, e = Alignments.size(); i != e; ++i) {
     if (Alignments[i].AlignType == align_type &&
@@ -272,18 +268,8 @@ unsigned TargetData::getAlignmentInfo(AlignTypeEnum AlignType,
       return ABIInfo ? Alignments[i].ABIAlign : Alignments[i].PrefAlign;
     
     // The best match so far depends on what we're looking for.
-    if (AlignType == VECTOR_ALIGN && Alignments[i].AlignType == VECTOR_ALIGN) {
-      // If this is a specification for a smaller vector type, we will fall back
-      // to it.  This happens because <128 x double> can be implemented in terms
-      // of 64 <2 x double>.
-      if (Alignments[i].TypeBitWidth < BitWidth) {
-        // Verify that we pick the biggest of the fallbacks.
-        if (BestMatchIdx == -1 ||
-            Alignments[BestMatchIdx].TypeBitWidth < Alignments[i].TypeBitWidth)
-          BestMatchIdx = i;
-      }
-    } else if (AlignType == INTEGER_ALIGN && 
-               Alignments[i].AlignType == INTEGER_ALIGN) {
+     if (AlignType == INTEGER_ALIGN && 
+         Alignments[i].AlignType == INTEGER_ALIGN) {
       // The "best match" for integers is the smallest size that is larger than
       // the BitWidth requested.
       if (Alignments[i].TypeBitWidth > BitWidth && (BestMatchIdx == -1 || 
@@ -306,10 +292,15 @@ unsigned TargetData::getAlignmentInfo(AlignTypeEnum AlignType,
     } else {
       assert(AlignType == VECTOR_ALIGN && "Unknown alignment type!");
 
-      // If we didn't find a vector size that is smaller or equal to this type,
-      // then we will end up scalarizing this to its element type.  Just return
-      // the alignment of the element.
-      return getAlignment(cast<VectorType>(Ty)->getElementType(), ABIInfo);
+      // By default, use natural alignment for vector types. This is consistent
+      // with what clang and llvm-gcc do.
+      unsigned Align = getTypeAllocSize(cast<VectorType>(Ty)->getElementType());
+      Align *= cast<VectorType>(Ty)->getNumElements();
+      // If the alignment is not a power of 2, round up to the next power of 2.
+      // This happens for non-power-of-2 length vectors.
+      if (Align & (Align-1))
+        Align = llvm::NextPowerOf2(Align);
+      return Align;
     }
   }
 
@@ -318,43 +309,102 @@ unsigned TargetData::getAlignmentInfo(AlignTypeEnum AlignType,
                  : Alignments[BestMatchIdx].PrefAlign;
 }
 
-typedef DenseMap<const StructType*, StructLayout*>LayoutInfoTy;
+namespace {
 
-TargetData::~TargetData() {
-  if (!LayoutMap)
-    return;
-  
-  // Remove any layouts for this TD.
-  LayoutInfoTy &TheMap = *static_cast<LayoutInfoTy*>(LayoutMap);
-  for (LayoutInfoTy::iterator I = TheMap.begin(), E = TheMap.end(); I != E; ) {
+class StructLayoutMap : public AbstractTypeUser {
+  typedef DenseMap<const StructType*, StructLayout*> LayoutInfoTy;
+  LayoutInfoTy LayoutInfo;
+
+  void RemoveEntry(LayoutInfoTy::iterator I, bool WasAbstract) {
     I->second->~StructLayout();
     free(I->second);
-    TheMap.erase(I++);
+    if (WasAbstract)
+      I->first->removeAbstractTypeUser(this);
+    LayoutInfo.erase(I);
   }
   
-  delete static_cast<LayoutInfoTy*>(LayoutMap);
+  
+  /// refineAbstractType - The callback method invoked when an abstract type is
+  /// resolved to another type.  An object must override this method to update
+  /// its internal state to reference NewType instead of OldType.
+  ///
+  virtual void refineAbstractType(const DerivedType *OldTy,
+                                  const Type *) {
+    LayoutInfoTy::iterator I = LayoutInfo.find(cast<const StructType>(OldTy));
+    assert(I != LayoutInfo.end() && "Using type but not in map?");
+    RemoveEntry(I, true);
+  }
+
+  /// typeBecameConcrete - The other case which AbstractTypeUsers must be aware
+  /// of is when a type makes the transition from being abstract (where it has
+  /// clients on its AbstractTypeUsers list) to concrete (where it does not).
+  /// This method notifies ATU's when this occurs for a type.
+  ///
+  virtual void typeBecameConcrete(const DerivedType *AbsTy) {
+    LayoutInfoTy::iterator I = LayoutInfo.find(cast<const StructType>(AbsTy));
+    assert(I != LayoutInfo.end() && "Using type but not in map?");
+    RemoveEntry(I, true);
+  }
+
+public:
+  virtual ~StructLayoutMap() {
+    // Remove any layouts.
+    for (LayoutInfoTy::iterator
+           I = LayoutInfo.begin(), E = LayoutInfo.end(); I != E; ++I) {
+      const Type *Key = I->first;
+      StructLayout *Value = I->second;
+
+      if (Key->isAbstract())
+        Key->removeAbstractTypeUser(this);
+
+      Value->~StructLayout();
+      free(Value);
+    }
+  }
+
+  void InvalidateEntry(const StructType *Ty) {
+    LayoutInfoTy::iterator I = LayoutInfo.find(Ty);
+    if (I == LayoutInfo.end()) return;
+    RemoveEntry(I, Ty->isAbstract());
+  }
+
+  StructLayout *&operator[](const StructType *STy) {
+    return LayoutInfo[STy];
+  }
+
+  // for debugging...
+  virtual void dump() const {}
+};
+
+} // end anonymous namespace
+
+TargetData::~TargetData() {
+  delete static_cast<StructLayoutMap*>(LayoutMap);
 }
 
 const StructLayout *TargetData::getStructLayout(const StructType *Ty) const {
   if (!LayoutMap)
-    LayoutMap = static_cast<void*>(new LayoutInfoTy());
+    LayoutMap = new StructLayoutMap();
   
-  LayoutInfoTy &TheMap = *static_cast<LayoutInfoTy*>(LayoutMap);
-  
-  StructLayout *&SL = TheMap[Ty];
+  StructLayoutMap *STM = static_cast<StructLayoutMap*>(LayoutMap);
+  StructLayout *&SL = (*STM)[Ty];
   if (SL) return SL;
 
   // Otherwise, create the struct layout.  Because it is variable length, we 
   // malloc it, then use placement new.
   int NumElts = Ty->getNumElements();
   StructLayout *L =
-    (StructLayout *)malloc(sizeof(StructLayout)+(NumElts-1)*sizeof(uint64_t));
+    (StructLayout *)malloc(sizeof(StructLayout)+(NumElts-1) * sizeof(uint64_t));
   
   // Set SL before calling StructLayout's ctor.  The ctor could cause other
   // entries to be added to TheMap, invalidating our reference.
   SL = L;
   
   new (L) StructLayout(Ty, *this);
+
+  if (Ty->isAbstract())
+    Ty->addAbstractTypeUser(STM);
+
   return L;
 }
 
@@ -365,31 +415,29 @@ const StructLayout *TargetData::getStructLayout(const StructType *Ty) const {
 void TargetData::InvalidateStructLayoutInfo(const StructType *Ty) const {
   if (!LayoutMap) return;  // No cache.
   
-  LayoutInfoTy* LayoutInfo = static_cast<LayoutInfoTy*>(LayoutMap);
-  LayoutInfoTy::iterator I = LayoutInfo->find(Ty);
-  if (I == LayoutInfo->end()) return;
-  
-  I->second->~StructLayout();
-  free(I->second);
-  LayoutInfo->erase(I);
+  static_cast<StructLayoutMap*>(LayoutMap)->InvalidateEntry(Ty);
 }
 
-
 std::string TargetData::getStringRepresentation() const {
-  std::string repr;
-  repr.append(LittleEndian ? "e" : "E");
-  repr.append("-p:").append(itostr((int64_t) (PointerMemSize * 8))).
-      append(":").append(itostr((int64_t) (PointerABIAlign * 8))).
-      append(":").append(itostr((int64_t) (PointerPrefAlign * 8)));
-  for (align_const_iterator I = Alignments.begin();
-       I != Alignments.end();
-       ++I) {
-    repr.append("-").append(1, (char) I->AlignType).
-      append(utostr((int64_t) I->TypeBitWidth)).
-      append(":").append(utostr((uint64_t) (I->ABIAlign * 8))).
-      append(":").append(utostr((uint64_t) (I->PrefAlign * 8)));
+  std::string Result;
+  raw_string_ostream OS(Result);
+  
+  OS << (LittleEndian ? "e" : "E")
+     << "-p:" << PointerMemSize*8 << ':' << PointerABIAlign*8
+     << ':' << PointerPrefAlign*8;
+  for (unsigned i = 0, e = Alignments.size(); i != e; ++i) {
+    const TargetAlignElem &AI = Alignments[i];
+    OS << '-' << (char)AI.AlignType << AI.TypeBitWidth << ':'
+       << AI.ABIAlign*8 << ':' << AI.PrefAlign*8;
   }
-  return repr;
+  
+  if (!LegalIntWidths.empty()) {
+    OS << "-n" << (unsigned)LegalIntWidths[0];
+    
+    for (unsigned i = 1, e = LegalIntWidths.size(); i != e; ++i)
+      OS << ':' << (unsigned)LegalIntWidths[i];
+  }
+  return OS.str();
 }
 
 
@@ -438,7 +486,7 @@ uint64_t TargetData::getTypeSizeInBits(const Type *Ty) const {
   Get the ABI (\a abi_or_pref == true) or preferred alignment (\a abi_or_pref
   == false) for the requested type \a Ty.
  */
-unsigned char TargetData::getAlignment(const Type *Ty, bool abi_or_pref) const {
+unsigned TargetData::getAlignment(const Type *Ty, bool abi_or_pref) const {
   int AlignType = -1;
 
   assert(Ty->isSized() && "Cannot getTypeInfo() on a type that is unsized!");
@@ -460,7 +508,7 @@ unsigned char TargetData::getAlignment(const Type *Ty, bool abi_or_pref) const {
     // Get the layout annotation... which is lazily created on demand.
     const StructLayout *Layout = getStructLayout(cast<StructType>(Ty));
     unsigned Align = getAlignmentInfo(AGGREGATE_ALIGN, 0, abi_or_pref, Ty);
-    return std::max(Align, (unsigned)Layout->getAlignment());
+    return std::max(Align, Layout->getAlignment());
   }
   case Type::IntegerTyID:
   case Type::VoidTyID:
@@ -487,11 +535,18 @@ unsigned char TargetData::getAlignment(const Type *Ty, bool abi_or_pref) const {
                           abi_or_pref, Ty);
 }
 
-unsigned char TargetData::getABITypeAlignment(const Type *Ty) const {
+unsigned TargetData::getABITypeAlignment(const Type *Ty) const {
   return getAlignment(Ty, true);
 }
 
-unsigned char TargetData::getCallFrameTypeAlignment(const Type *Ty) const {
+/// getABIIntegerTypeAlignment - Return the minimum ABI-required alignment for
+/// an integer type of the specified bitwidth.
+unsigned TargetData::getABIIntegerTypeAlignment(unsigned BitWidth) const {
+  return getAlignmentInfo(INTEGER_ALIGN, BitWidth, true, 0);
+}
+
+
+unsigned TargetData::getCallFrameTypeAlignment(const Type *Ty) const {
   for (unsigned i = 0, e = Alignments.size(); i != e; ++i)
     if (Alignments[i].AlignType == STACK_ALIGN)
       return Alignments[i].ABIAlign;
@@ -499,12 +554,12 @@ unsigned char TargetData::getCallFrameTypeAlignment(const Type *Ty) const {
   return getABITypeAlignment(Ty);
 }
 
-unsigned char TargetData::getPrefTypeAlignment(const Type *Ty) const {
+unsigned TargetData::getPrefTypeAlignment(const Type *Ty) const {
   return getAlignment(Ty, false);
 }
 
-unsigned char TargetData::getPreferredTypeAlignmentShift(const Type *Ty) const {
-  unsigned Align = (unsigned) getPrefTypeAlignment(Ty);
+unsigned TargetData::getPreferredTypeAlignmentShift(const Type *Ty) const {
+  unsigned Align = getPrefTypeAlignment(Ty);
   assert(!(Align & (Align-1)) && "Alignment is not a power of two!");
   return Log2_32(Align);
 }
@@ -519,7 +574,7 @@ const IntegerType *TargetData::getIntPtrType(LLVMContext &C) const {
 uint64_t TargetData::getIndexedOffset(const Type *ptrTy, Value* const* Indices,
                                       unsigned NumIndices) const {
   const Type *Ty = ptrTy;
-  assert(isa<PointerType>(Ty) && "Illegal argument for getIndexedOffset()");
+  assert(Ty->isPointerTy() && "Illegal argument for getIndexedOffset()");
   uint64_t Result = 0;
 
   generic_gep_type_iterator<Value* const*>
@@ -544,8 +599,8 @@ uint64_t TargetData::getIndexedOffset(const Type *ptrTy, Value* const* Indices,
       Ty = cast<SequentialType>(Ty)->getElementType();
 
       // Get the array index and the size of each array element.
-      int64_t arrayIdx = cast<ConstantInt>(Indices[CurIDX])->getSExtValue();
-      Result += arrayIdx * (int64_t)getTypeAllocSize(Ty);
+      if (int64_t arrayIdx = cast<ConstantInt>(Indices[CurIDX])->getSExtValue())
+        Result += (uint64_t)arrayIdx * getTypeAllocSize(Ty);
     }
   }
 

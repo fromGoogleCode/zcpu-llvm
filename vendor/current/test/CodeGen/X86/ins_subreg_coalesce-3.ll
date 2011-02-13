@@ -1,4 +1,4 @@
-; RUN: llvm-as < %s | llc -march=x86-64 | grep mov | count 11
+; RUN: llc < %s -march=x86-64 | grep mov | count 3
 
 	%struct.COMPOSITE = type { i8, i16, i16 }
 	%struct.FILE = type { i8*, i32, i32, i16, i16, %struct.__sbuf, i32, i8*, i32 (i8*)*, i32 (i8*, i8*, i32)*, i64 (i8*, i64, i32)*, i32 (i8*, i8*, i32)*, %struct.__sbuf, %struct.__sFILEX*, i32, [3 x i8], [1 x i8], %struct.__sbuf, i32, i64 }
@@ -39,8 +39,7 @@ bb650:		; preds = %bb650, %bb428
 	%tmp659 = icmp eq i8 %tmp658, 0		; <i1> [#uses=1]
 	br i1 %tmp659, label %bb650, label %bb662
 bb662:		; preds = %bb650
-	%tmp685 = icmp eq %struct.rec* null, null		; <i1> [#uses=1]
-	br i1 %tmp685, label %bb761, label %bb688
+	br label %bb761
 bb688:		; preds = %bb662
 	ret void
 bb761:		; preds = %bb662

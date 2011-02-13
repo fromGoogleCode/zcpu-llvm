@@ -11,7 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Target/TargetAsmInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/CommandLine.h"
@@ -25,20 +27,23 @@ namespace llvm {
   bool LessPreciseFPMADOption;
   bool PrintMachineCode;
   bool NoFramePointerElim;
+  bool NoFramePointerElimNonLeaf;
   bool NoExcessFPPrecision;
   bool UnsafeFPMath;
-  bool FiniteOnlyFPMathOption;
+  bool NoInfsFPMath;
+  bool NoNaNsFPMath;
   bool HonorSignDependentRoundingFPMathOption;
   bool UseSoftFloat;
   FloatABI::ABIType FloatABIType;
   bool NoImplicitFloat;
   bool NoZerosInBSS;
-  bool DwarfExceptionHandling;
-  bool SjLjExceptionHandling;
+  bool JITExceptionHandling;
+  bool JITEmitDebugInfo;
+  bool JITEmitDebugInfoToDisk;
   bool UnwindTablesMandatory;
   Reloc::Model RelocationModel;
   CodeModel::Model CMModel;
-  bool PerformTailCallOpt;
+  bool GuaranteedTailCallOpt;
   unsigned StackAlignment;
   bool RealignStack;
   bool DisableJumpTables;
@@ -56,6 +61,11 @@ DisableFPElim("disable-fp-elim",
   cl::location(NoFramePointerElim),
   cl::init(false));
 static cl::opt<bool, true>
+DisableFPElimNonLeaf("disable-non-leaf-fp-elim",
+  cl::desc("Disable frame pointer elimination optimization for non-leaf funcs"),
+  cl::location(NoFramePointerElimNonLeaf),
+  cl::init(false));
+static cl::opt<bool, true>
 DisableExcessPrecision("disable-excess-fp-precision",
   cl::desc("Disable optimizations that may increase FP precision"),
   cl::location(NoExcessFPPrecision),
@@ -71,9 +81,14 @@ EnableUnsafeFPMath("enable-unsafe-fp-math",
   cl::location(UnsafeFPMath),
   cl::init(false));
 static cl::opt<bool, true>
-EnableFiniteOnlyFPMath("enable-finite-only-fp-math",
-  cl::desc("Enable optimizations that assumes non- NaNs / +-Infs"),
-  cl::location(FiniteOnlyFPMathOption),
+EnableNoInfsFPMath("enable-no-infs-fp-math",
+  cl::desc("Enable FP math optimizations that assume no +-Infs"),
+  cl::location(NoInfsFPMath),
+  cl::init(false));
+static cl::opt<bool, true>
+EnableNoNaNsFPMath("enable-no-nans-fp-math",
+  cl::desc("Enable FP math optimizations that assume no NaNs"),
+  cl::location(NoNaNsFPMath),
   cl::init(false));
 static cl::opt<bool, true>
 EnableHonorSignDependentRoundingFPMath("enable-sign-dependent-rounding-fp-math",
@@ -105,14 +120,27 @@ DontPlaceZerosInBSS("nozero-initialized-in-bss",
   cl::location(NoZerosInBSS),
   cl::init(false));
 static cl::opt<bool, true>
-EnableDwarfExceptionHandling("enable-eh",
-  cl::desc("Emit DWARF exception handling (default if target supports)"),
-  cl::location(DwarfExceptionHandling),
+EnableJITExceptionHandling("jit-enable-eh",
+  cl::desc("Emit exception handling information"),
+  cl::location(JITExceptionHandling),
   cl::init(false));
+// In debug builds, make this default to true.
+#ifdef NDEBUG
+#define EMIT_DEBUG false
+#else
+#define EMIT_DEBUG true
+#endif
 static cl::opt<bool, true>
-EnableSjLjExceptionHandling("enable-sjlj-eh",
-  cl::desc("Emit SJLJ exception handling (default if target supports)"),
-  cl::location(SjLjExceptionHandling),
+EmitJitDebugInfo("jit-emit-debug",
+  cl::desc("Emit debug information to debugger"),
+  cl::location(JITEmitDebugInfo),
+  cl::init(EMIT_DEBUG));
+#undef EMIT_DEBUG
+static cl::opt<bool, true>
+EmitJitDebugInfoToDisk("jit-emit-debug-to-disk",
+  cl::Hidden,
+  cl::desc("Emit debug info objfiles to disk"),
+  cl::location(JITEmitDebugInfoToDisk),
   cl::init(false));
 static cl::opt<bool, true>
 EnableUnwindTables("unwind-tables",
@@ -153,9 +181,9 @@ DefCodeModel("code-model",
                "Large code model"),
     clEnumValEnd));
 static cl::opt<bool, true>
-EnablePerformTailCallOpt("tailcallopt",
-  cl::desc("Turn on tail call optimization."),
-  cl::location(PerformTailCallOpt),
+EnableGuaranteedTailCallOpt("tailcallopt",
+  cl::desc("Turn fastcc calls into tail calls by (potentially) changing ABI."),
+  cl::location(GuaranteedTailCallOpt),
   cl::init(false));
 static cl::opt<unsigned, true>
 OverrideStackAlignment("stack-alignment",
@@ -177,13 +205,21 @@ EnableStrongPHIElim(cl::Hidden, "strong-phi-elim",
   cl::desc("Use strong PHI elimination."),
   cl::location(StrongPHIElim),
   cl::init(false));
-
+static cl::opt<bool>
+DataSections("fdata-sections",
+  cl::desc("Emit data into separate sections"),
+  cl::init(false));
+static cl::opt<bool>
+FunctionSections("ffunction-sections",
+  cl::desc("Emit functions into separate sections"),
+  cl::init(false));
 //---------------------------------------------------------------------------
 // TargetMachine Class
 //
 
 TargetMachine::TargetMachine(const Target &T) 
-  : TheTarget(T), AsmInfo(0) {
+  : TheTarget(T), AsmInfo(0),
+    MCRelaxAll(false) {
   // Typically it will be subtargets that will adjust FloatABIType from Default
   // to Soft or Hard.
   if (UseSoftFloat)
@@ -224,23 +260,45 @@ void TargetMachine::setAsmVerbosityDefault(bool V) {
   AsmVerbosityDefault = V;
 }
 
+bool TargetMachine::getFunctionSections() {
+  return FunctionSections;
+}
+
+bool TargetMachine::getDataSections() {
+  return DataSections;
+}
+
+void TargetMachine::setFunctionSections(bool V) {
+  FunctionSections = V;
+}
+
+void TargetMachine::setDataSections(bool V) {
+  DataSections = V;
+}
+
 namespace llvm {
+  /// DisableFramePointerElim - This returns true if frame pointer elimination
+  /// optimization should be disabled for the given machine function.
+  bool DisableFramePointerElim(const MachineFunction &MF) {
+    // Check to see if we should eliminate non-leaf frame pointers and then
+    // check to see if we should eliminate all frame pointers.
+    if (NoFramePointerElimNonLeaf && !NoFramePointerElim) {
+      const MachineFrameInfo *MFI = MF.getFrameInfo();
+      return MFI->hasCalls();
+    }
+
+    return NoFramePointerElim;
+  }
+
   /// LessPreciseFPMAD - This flag return true when -enable-fp-mad option
   /// is specified on the command line.  When this flag is off(default), the
   /// code generator is not allowed to generate mad (multiply add) if the
   /// result is "less precise" than doing those operations individually.
   bool LessPreciseFPMAD() { return UnsafeFPMath || LessPreciseFPMADOption; }
 
-  /// FiniteOnlyFPMath - This returns true when the -enable-finite-only-fp-math
-  /// option is specified on the command line. If this returns false (default),
-  /// the code generator is not allowed to assume that FP arithmetic arguments
-  /// and results are never NaNs or +-Infs.
-  bool FiniteOnlyFPMath() { return UnsafeFPMath || FiniteOnlyFPMathOption; }
-  
   /// HonorSignDependentRoundingFPMath - Return true if the codegen must assume
   /// that the rounding mode of the FPU can change from its default.
   bool HonorSignDependentRoundingFPMath() {
     return !UnsafeFPMath && HonorSignDependentRoundingFPMathOption;
   }
 }
-

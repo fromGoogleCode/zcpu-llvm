@@ -17,9 +17,8 @@
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Support/CallSite.h"
-#include "llvm/Support/Compiler.h"
-#include "llvm/Support/Streams.h"
-#include <ostream>
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
 namespace {
@@ -27,7 +26,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 // BasicCallGraph class definition
 //
-class VISIBILITY_HIDDEN BasicCallGraph : public CallGraph, public ModulePass {
+class BasicCallGraph : public ModulePass, public CallGraph {
   // Root is root of the call graph, or the external node if a 'main' function
   // couldn't be found.
   //
@@ -43,7 +42,7 @@ class VISIBILITY_HIDDEN BasicCallGraph : public CallGraph, public ModulePass {
 
 public:
   static char ID; // Class identification, replacement for typeinfo
-  BasicCallGraph() : ModulePass(&ID), Root(0), 
+  BasicCallGraph() : ModulePass(ID), Root(0), 
     ExternalCallingNode(0), CallsExternalNode(0) {}
 
   // runOnModule - Compute the call graph for the specified module.
@@ -54,7 +53,7 @@ public:
     CallsExternalNode = new CallGraphNode(0);
     Root = 0;
   
-    // Add every function to the call graph...
+    // Add every function to the call graph.
     for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
       addToCallGraph(I);
   
@@ -68,30 +67,31 @@ public:
     AU.setPreservesAll();
   }
 
-  void print(std::ostream *o, const Module *M) const {
-    if (o) print(*o, M);
-  }
-
-  virtual void print(std::ostream &o, const Module *M) const {
-    o << "CallGraph Root is: ";
+  virtual void print(raw_ostream &OS, const Module *) const {
+    OS << "CallGraph Root is: ";
     if (Function *F = getRoot()->getFunction())
-      o << F->getNameStr() << "\n";
-    else
-      o << "<<null function: 0x" << getRoot() << ">>\n";
+      OS << F->getName() << "\n";
+    else {
+      OS << "<<null function: 0x" << getRoot() << ">>\n";
+    }
     
-    CallGraph::print(o, M);
+    CallGraph::print(OS, 0);
   }
 
   virtual void releaseMemory() {
     destroy();
   }
   
-  /// dump - Print out this call graph.
-  ///
-  inline void dump() const {
-    print(cerr, Mod);
+  /// getAdjustedAnalysisPointer - This method is used when a pass implements
+  /// an analysis interface through multiple inheritance.  If needed, it should
+  /// override this to adjust the this pointer as needed for the specified pass
+  /// info.
+  virtual void *getAdjustedAnalysisPointer(AnalysisID PI) {
+    if (PI == &CallGraph::ID)
+      return (CallGraph*)this;
+    return this;
   }
-
+  
   CallGraphNode* getExternalCallingNode() const { return ExternalCallingNode; }
   CallGraphNode* getCallsExternalNode()   const { return CallsExternalNode; }
 
@@ -126,13 +126,15 @@ private:
     }
 
     // Loop over all of the users of the function, looking for non-call uses.
-    for (Value::use_iterator I = F->use_begin(), E = F->use_end(); I != E; ++I)
-      if ((!isa<CallInst>(I) && !isa<InvokeInst>(I))
-          || !CallSite(cast<Instruction>(I)).isCallee(I)) {
+    for (Value::use_iterator I = F->use_begin(), E = F->use_end(); I != E; ++I){
+      User *U = *I;
+      if ((!isa<CallInst>(U) && !isa<InvokeInst>(U))
+          || !CallSite(cast<Instruction>(U)).isCallee(I)) {
         // Not a call, or being used as a parameter rather than as the callee.
         ExternalCallingNode->addCalledFunction(CallSite(), Node);
         break;
       }
+    }
 
     // If this function is not defined in this translation unit, it could call
     // anything.
@@ -143,8 +145,8 @@ private:
     for (Function::iterator BB = F->begin(), BBE = F->end(); BB != BBE; ++BB)
       for (BasicBlock::iterator II = BB->begin(), IE = BB->end();
            II != IE; ++II) {
-        CallSite CS = CallSite::get(II);
-        if (CS.getInstruction() && !isa<DbgInfoIntrinsic>(II)) {
+        CallSite CS(cast<Value>(II));
+        if (CS && !isa<DbgInfoIntrinsic>(II)) {
           const Function *Callee = CS.getCalledFunction();
           if (Callee)
             Node->addCalledFunction(CS, getOrInsertFunction(Callee));
@@ -158,8 +160,11 @@ private:
   // destroy - Release memory for the call graph
   virtual void destroy() {
     /// CallsExternalNode is not in the function map, delete it explicitly.
-    delete CallsExternalNode;
-    CallsExternalNode = 0;
+    if (CallsExternalNode) {
+      CallsExternalNode->allReferencesDropped();
+      delete CallsExternalNode;
+      CallsExternalNode = 0;
+    }
     CallGraph::destroy();
   }
 };
@@ -167,9 +172,8 @@ private:
 } //End anonymous namespace
 
 static RegisterAnalysisGroup<CallGraph> X("Call Graph");
-static RegisterPass<BasicCallGraph>
-Y("basiccg", "Basic CallGraph Construction", false, true);
-static RegisterAnalysisGroup<CallGraph, true> Z(Y);
+INITIALIZE_AG_PASS(BasicCallGraph, CallGraph, "basiccg",
+                   "Basic CallGraph Construction", false, true, true);
 
 char CallGraph::ID = 0;
 char BasicCallGraph::ID = 0;
@@ -179,21 +183,28 @@ void CallGraph::initialize(Module &M) {
 }
 
 void CallGraph::destroy() {
-  if (!FunctionMap.empty()) {
-    for (FunctionMapTy::iterator I = FunctionMap.begin(), E = FunctionMap.end();
-        I != E; ++I)
-      delete I->second;
-    FunctionMap.clear();
-  }
+  if (FunctionMap.empty()) return;
+  
+  // Reset all node's use counts to zero before deleting them to prevent an
+  // assertion from firing.
+#ifndef NDEBUG
+  for (FunctionMapTy::iterator I = FunctionMap.begin(), E = FunctionMap.end();
+       I != E; ++I)
+    I->second->allReferencesDropped();
+#endif
+  
+  for (FunctionMapTy::iterator I = FunctionMap.begin(), E = FunctionMap.end();
+      I != E; ++I)
+    delete I->second;
+  FunctionMap.clear();
 }
 
-void CallGraph::print(std::ostream &OS, const Module *M) const {
+void CallGraph::print(raw_ostream &OS, Module*) const {
   for (CallGraph::const_iterator I = begin(), E = end(); I != E; ++I)
     I->second->print(OS);
 }
-
 void CallGraph::dump() const {
-  print(cerr, 0);
+  print(dbgs(), 0);
 }
 
 //===----------------------------------------------------------------------===//
@@ -207,7 +218,7 @@ void CallGraph::dump() const {
 // is to dropAllReferences before calling this.
 //
 Function *CallGraph::removeFunctionFromModule(CallGraphNode *CGN) {
-  assert(CGN->CalledFunctions.empty() && "Cannot remove function from call "
+  assert(CGN->empty() && "Cannot remove function from call "
          "graph if it references other functions!");
   Function *F = CGN->getFunction(); // Get the function for the call graph node
   delete CGN;                       // Delete the call graph node for this func
@@ -215,20 +226,6 @@ Function *CallGraph::removeFunctionFromModule(CallGraphNode *CGN) {
 
   Mod->getFunctionList().remove(F);
   return F;
-}
-
-// changeFunction - This method changes the function associated with this
-// CallGraphNode, for use by transformations that need to change the prototype
-// of a Function (thus they must create a new Function and move the old code
-// over).
-void CallGraph::changeFunction(Function *OldF, Function *NewF) {
-  iterator I = FunctionMap.find(OldF);
-  CallGraphNode *&New = FunctionMap[NewF];
-  assert(I != FunctionMap.end() && I->second && !New &&
-         "OldF didn't exist in CG or NewF already does!");
-  New = I->second;
-  New->F = NewF;
-  FunctionMap.erase(I);
 }
 
 // getOrInsertFunction - This method is identical to calling operator[], but
@@ -242,21 +239,25 @@ CallGraphNode *CallGraph::getOrInsertFunction(const Function *F) {
   return CGN = new CallGraphNode(const_cast<Function*>(F));
 }
 
-void CallGraphNode::print(std::ostream &OS) const {
+void CallGraphNode::print(raw_ostream &OS) const {
   if (Function *F = getFunction())
-    OS << "Call graph node for function: '" << F->getNameStr() <<"'\n";
+    OS << "Call graph node for function: '" << F->getName() << "'";
   else
-    OS << "Call graph node <<null function: 0x" << this << ">>:\n";
+    OS << "Call graph node <<null function>>";
+  
+  OS << "<<" << this << ">>  #uses=" << getNumReferences() << '\n';
 
-  for (const_iterator I = begin(), E = end(); I != E; ++I)
+  for (const_iterator I = begin(), E = end(); I != E; ++I) {
+    OS << "  CS<" << I->first << "> calls ";
     if (Function *FI = I->second->getFunction())
-      OS << "  Calls function '" << FI->getNameStr() <<"'\n";
-  else
-    OS << "  Calls external node\n";
-  OS << "\n";
+      OS << "function '" << FI->getName() <<"'\n";
+    else
+      OS << "external node\n";
+  }
+  OS << '\n';
 }
 
-void CallGraphNode::dump() const { print(cerr); }
+void CallGraphNode::dump() const { print(dbgs()); }
 
 /// removeCallEdgeFor - This method removes the edge in the node for the
 /// specified call site.  Note that this method takes linear time, so it
@@ -264,8 +265,10 @@ void CallGraphNode::dump() const { print(cerr); }
 void CallGraphNode::removeCallEdgeFor(CallSite CS) {
   for (CalledFunctionsVector::iterator I = CalledFunctions.begin(); ; ++I) {
     assert(I != CalledFunctions.end() && "Cannot find callsite to remove!");
-    if (I->first == CS) {
-      CalledFunctions.erase(I);
+    if (I->first == CS.getInstruction()) {
+      I->second->DropRef();
+      *I = CalledFunctions.back();
+      CalledFunctions.pop_back();
       return;
     }
   }
@@ -278,6 +281,7 @@ void CallGraphNode::removeCallEdgeFor(CallSite CS) {
 void CallGraphNode::removeAnyCallEdgeTo(CallGraphNode *Callee) {
   for (unsigned i = 0, e = CalledFunctions.size(); i != e; ++i)
     if (CalledFunctions[i].second == Callee) {
+      Callee->DropRef();
       CalledFunctions[i] = CalledFunctions.back();
       CalledFunctions.pop_back();
       --i; --e;
@@ -290,21 +294,27 @@ void CallGraphNode::removeOneAbstractEdgeTo(CallGraphNode *Callee) {
   for (CalledFunctionsVector::iterator I = CalledFunctions.begin(); ; ++I) {
     assert(I != CalledFunctions.end() && "Cannot find callee to remove!");
     CallRecord &CR = *I;
-    if (CR.second == Callee && !CR.first.getInstruction()) {
-      CalledFunctions.erase(I);
+    if (CR.second == Callee && CR.first == 0) {
+      Callee->DropRef();
+      *I = CalledFunctions.back();
+      CalledFunctions.pop_back();
       return;
     }
   }
 }
 
-/// replaceCallSite - Make the edge in the node for Old CallSite be for
-/// New CallSite instead.  Note that this method takes linear time, so it
-/// should be used sparingly.
-void CallGraphNode::replaceCallSite(CallSite Old, CallSite New) {
+/// replaceCallEdge - This method replaces the edge in the node for the
+/// specified call site with a new one.  Note that this method takes linear
+/// time, so it should be used sparingly.
+void CallGraphNode::replaceCallEdge(CallSite CS,
+                                    CallSite NewCS, CallGraphNode *NewNode){
   for (CalledFunctionsVector::iterator I = CalledFunctions.begin(); ; ++I) {
-    assert(I != CalledFunctions.end() && "Cannot find callsite to replace!");
-    if (I->first == Old) {
-      I->first = New;
+    assert(I != CalledFunctions.end() && "Cannot find callsite to remove!");
+    if (I->first == CS.getInstruction()) {
+      I->second->DropRef();
+      I->first = NewCS.getInstruction();
+      I->second = NewNode;
+      NewNode->AddRef();
       return;
     }
   }

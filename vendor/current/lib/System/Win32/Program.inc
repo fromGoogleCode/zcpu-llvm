@@ -22,17 +22,30 @@
 //===          and must not be UNIX code
 //===----------------------------------------------------------------------===//
 
+namespace {
+  struct Win32ProcessInfo {
+    HANDLE hProcess;
+    DWORD  dwProcessId;
+  };
+}
+
 namespace llvm {
 using namespace sys;
 
-Program::Program() : Pid_(0), Data(0) {}
+Program::Program() : Data_(0) {}
 
 Program::~Program() {
-	if (Data) {
-		HANDLE hProcess = (HANDLE) Data;
-		CloseHandle(hProcess);
-		Data = 0;
-	}
+  if (Data_) {
+    Win32ProcessInfo* wpi = reinterpret_cast<Win32ProcessInfo*>(Data_);
+    CloseHandle(wpi->hProcess);
+    delete wpi;
+    Data_ = 0;
+  }
+}
+
+unsigned Program::GetPid() const {
+  Win32ProcessInfo* wpi = reinterpret_cast<Win32ProcessInfo*>(Data_);
+  return wpi->dwProcessId;
 }
 
 // This function just uses the PATH environment variable to find the program.
@@ -92,7 +105,7 @@ static HANDLE RedirectIO(const Path *path, int fd, std::string* ErrMsg) {
   if (path->isEmpty())
     fname = "NUL";
   else
-    fname = path->toString().c_str();
+    fname = path->c_str();
 
   SECURITY_ATTRIBUTES sa;
   sa.nLength = sizeof(sa);
@@ -121,9 +134,27 @@ static HANDLE RedirectIO(const Path *path, int fd, std::string* ErrMsg) {
 
 /// ArgNeedsQuotes - Check whether argument needs to be quoted when calling
 /// CreateProcess.
-static bool ArgNeedsQuotes(const char *Str) {  
+static bool ArgNeedsQuotes(const char *Str) {
   return Str[0] == '\0' || strchr(Str, ' ') != 0;
 }
+
+
+/// ArgLenWithQuotes - Check whether argument needs to be quoted when calling
+/// CreateProcess and returns length of quoted arg with escaped quotes
+static unsigned int ArgLenWithQuotes(const char *Str) {
+  unsigned int len = ArgNeedsQuotes(Str) ? 2 : 0;
+
+  while (*Str != '\0') {
+    if (*Str == '\"')
+      ++len;
+
+    ++len;
+    ++Str;
+  }
+
+  return len;
+}
+
 
 bool
 Program::Execute(const Path& path,
@@ -132,12 +163,13 @@ Program::Execute(const Path& path,
                  const Path** redirects,
                  unsigned memoryLimit,
                  std::string* ErrMsg) {
-  if (Data) {
-    HANDLE hProcess = (HANDLE) Data;
-    CloseHandle(Data);
-    Data = 0;
+  if (Data_) {
+    Win32ProcessInfo* wpi = reinterpret_cast<Win32ProcessInfo*>(Data_);
+    CloseHandle(wpi->hProcess);
+    delete wpi;
+    Data_ = 0;
   }
-  
+
   if (!path.canExecute()) {
     if (ErrMsg)
       *ErrMsg = "program not executable";
@@ -151,9 +183,7 @@ Program::Execute(const Path& path,
   // First, determine the length of the command line.
   unsigned len = 0;
   for (unsigned i = 0; args[i]; i++) {
-    len += strlen(args[i]) + 1;
-    if (ArgNeedsQuotes(args[i]))
-      len += 2;
+    len += ArgLenWithQuotes(args[i]) + 1;
   }
 
   // Now build the command line.
@@ -162,12 +192,18 @@ Program::Execute(const Path& path,
 
   for (unsigned i = 0; args[i]; i++) {
     const char *arg = args[i];
-    size_t len = strlen(arg);
+
     bool needsQuoting = ArgNeedsQuotes(arg);
     if (needsQuoting)
       *p++ = '"';
-    memcpy(p, arg, len);
-    p += len;
+
+    while (*arg != '\0') {
+      if (*arg == '\"')
+        *p++ = '\\';
+
+      *p++ = *arg++;
+    }
+
     if (needsQuoting)
       *p++ = '"';
     *p++ = ' ';
@@ -258,16 +294,17 @@ Program::Execute(const Path& path,
   CloseHandle(si.hStdError);
 
   // Now return an error if the process didn't get created.
-  if (!rc)
-  {
+  if (!rc) {
     SetLastError(err);
     MakeErrMsg(ErrMsg, std::string("Couldn't execute program '") +
-               path.toString() + "'");
+               path.str() + "'");
     return false;
   }
-  Pid_ = pi.dwProcessId;
-  Data = pi.hProcess;
-  
+  Win32ProcessInfo* wpi = new Win32ProcessInfo;
+  wpi->hProcess = pi.hProcess;
+  wpi->dwProcessId = pi.dwProcessId;
+  Data_ = wpi;
+
   // Make sure these get closed no matter what.
   AutoHandle hThread(pi.hThread);
 
@@ -302,13 +339,14 @@ Program::Execute(const Path& path,
 int
 Program::Wait(unsigned secondsToWait,
               std::string* ErrMsg) {
-  if (Data == 0) {
+  if (Data_ == 0) {
     MakeErrMsg(ErrMsg, "Process not started!");
     return -1;
   }
 
-  HANDLE hProcess = (HANDLE) Data;
-  
+  Win32ProcessInfo* wpi = reinterpret_cast<Win32ProcessInfo*>(Data_);
+  HANDLE hProcess = wpi->hProcess;
+
   // Wait for the process to terminate.
   DWORD millisecondsToWait = INFINITE;
   if (secondsToWait > 0)
@@ -336,6 +374,23 @@ Program::Wait(unsigned secondsToWait,
   return status;
 }
 
+bool
+Program::Kill(std::string* ErrMsg) {
+  if (Data_ == 0) {
+    MakeErrMsg(ErrMsg, "Process not started!");
+    return true;
+  }
+
+  Win32ProcessInfo* wpi = reinterpret_cast<Win32ProcessInfo*>(Data_);
+  HANDLE hProcess = wpi->hProcess;
+  if (TerminateProcess(hProcess, 1) == 0) {
+    MakeErrMsg(ErrMsg, "The process couldn't be killed!");
+    return true;
+  }
+
+  return false;
+}
+
 bool Program::ChangeStdinToBinary(){
   int result = _setmode( _fileno(stdin), _O_BINARY );
   return result == -1;
@@ -343,6 +398,11 @@ bool Program::ChangeStdinToBinary(){
 
 bool Program::ChangeStdoutToBinary(){
   int result = _setmode( _fileno(stdout), _O_BINARY );
+  return result == -1;
+}
+
+bool Program::ChangeStderrToBinary(){
+  int result = _setmode( _fileno(stderr), _O_BINARY );
   return result == -1;
 }
 

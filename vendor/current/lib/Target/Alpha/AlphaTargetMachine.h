@@ -20,6 +20,7 @@
 #include "AlphaInstrInfo.h"
 #include "AlphaJITInfo.h"
 #include "AlphaISelLowering.h"
+#include "AlphaSelectionDAGInfo.h"
 #include "AlphaSubtarget.h"
 
 namespace llvm {
@@ -33,6 +34,7 @@ class AlphaTargetMachine : public LLVMTargetMachine {
   AlphaJITInfo JITInfo;
   AlphaSubtarget Subtarget;
   AlphaTargetLowering TLInfo;
+  AlphaSelectionDAGInfo TSInfo;
 
 public:
   AlphaTargetMachine(const Target &T, const std::string &TT,
@@ -44,8 +46,11 @@ public:
   virtual const AlphaRegisterInfo *getRegisterInfo() const {
     return &InstrInfo.getRegisterInfo();
   }
-  virtual AlphaTargetLowering* getTargetLowering() const {
-    return const_cast<AlphaTargetLowering*>(&TLInfo);
+  virtual const AlphaTargetLowering* getTargetLowering() const {
+    return &TLInfo;
+  }
+  virtual const AlphaSelectionDAGInfo* getSelectionDAGInfo() const {
+    return &TSInfo;
   }
   virtual const TargetData       *getTargetData() const { return &DataLayout; }
   virtual AlphaJITInfo* getJITInfo() {
@@ -56,20 +61,7 @@ public:
   virtual bool addInstSelector(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addPreEmitPass(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
-                              MachineCodeEmitter &MCE);
-  virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
                               JITCodeEmitter &JCE);
-  virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
-                              ObjectCodeEmitter &JCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    MachineCodeEmitter &MCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    JITCodeEmitter &JCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    ObjectCodeEmitter &OCE);
 };
 
 } // end namespace llvm

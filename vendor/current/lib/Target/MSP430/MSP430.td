@@ -48,7 +48,11 @@ include "MSP430CallingConv.td"
 
 include "MSP430InstrInfo.td"
 
-def MSP430InstrInfo : InstrInfo {} 
+def MSP430InstrInfo : InstrInfo;
+
+def MSP430InstPrinter : AsmWriter {
+  string AsmWriterClassName  = "InstPrinter";
+}
 
 //===----------------------------------------------------------------------===//
 // Target Declaration
@@ -56,5 +60,6 @@ def MSP430InstrInfo : InstrInfo {}
 
 def MSP430 : Target {
   let InstructionSet = MSP430InstrInfo;
+  let AssemblyWriters = [MSP430InstPrinter];
 }
 

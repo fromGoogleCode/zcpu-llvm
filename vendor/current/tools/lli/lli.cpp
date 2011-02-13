@@ -15,8 +15,8 @@
 
 #include "llvm/LLVMContext.h"
 #include "llvm/Module.h"
-#include "llvm/ModuleProvider.h"
 #include "llvm/Type.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/CodeGen/LinkAllCodegenComponents.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
@@ -28,6 +28,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PluginLoader.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/System/Process.h"
 #include "llvm/System/Signals.h"
 #include "llvm/Target/TargetSelect.h"
@@ -56,6 +57,22 @@ namespace {
 
   cl::opt<std::string>
   TargetTriple("mtriple", cl::desc("Override target triple for module"));
+
+  cl::opt<std::string>
+  MArch("march",
+        cl::desc("Architecture to generate assembly for (see --version)"));
+
+  cl::opt<std::string>
+  MCPU("mcpu",
+       cl::desc("Target a specific cpu type (-mcpu=help for details)"),
+       cl::value_desc("cpu-name"),
+       cl::init(""));
+
+  cl::list<std::string>
+  MAttrs("mattr",
+         cl::CommaSeparated,
+         cl::desc("Target specific attributes (-mattr=help for details)"),
+         cl::value_desc("a1,+a2,-a3,..."));
 
   cl::opt<std::string>
   EntryFunc("entry-function",
@@ -109,28 +126,31 @@ int main(int argc, char **argv, char * const *envp) {
   
   // Load the bitcode...
   std::string ErrorMsg;
-  ModuleProvider *MP = NULL;
+  Module *Mod = NULL;
   if (MemoryBuffer *Buffer = MemoryBuffer::getFileOrSTDIN(InputFile,&ErrorMsg)){
-    MP = getBitcodeModuleProvider(Buffer, Context, &ErrorMsg);
-    if (!MP) delete Buffer;
+    Mod = getLazyBitcodeModule(Buffer, Context, &ErrorMsg);
+    if (!Mod) delete Buffer;
   }
   
-  if (!MP) {
+  if (!Mod) {
     errs() << argv[0] << ": error loading program '" << InputFile << "': "
            << ErrorMsg << "\n";
     exit(1);
   }
 
-  // Get the module as the MP could go away once EE takes over.
-  Module *Mod = NoLazyCompilation
-    ? MP->materializeModule(&ErrorMsg) : MP->getModule();
-  if (!Mod) {
-    errs() << argv[0] << ": bitcode didn't read correctly.\n";
-    errs() << "Reason: " << ErrorMsg << "\n";
-    exit(1);
+  // If not jitting lazily, load the whole bitcode file eagerly too.
+  if (NoLazyCompilation) {
+    if (Mod->MaterializeAllPermanently(&ErrorMsg)) {
+      errs() << argv[0] << ": bitcode didn't read correctly.\n";
+      errs() << "Reason: " << ErrorMsg << "\n";
+      exit(1);
+    }
   }
 
-  EngineBuilder builder(MP);
+  EngineBuilder builder(Mod);
+  builder.setMArch(MArch);
+  builder.setMCPU(MCPU);
+  builder.setMAttrs(MAttrs);
   builder.setErrorStr(&ErrorMsg);
   builder.setEngineKind(ForceInterpreter
                         ? EngineKind::Interpreter
@@ -138,7 +158,7 @@ int main(int argc, char **argv, char * const *envp) {
 
   // If we are supposed to override the target triple, do so now.
   if (!TargetTriple.empty())
-    Mod->setTargetTriple(TargetTriple);
+    Mod->setTargetTriple(Triple::normalize(TargetTriple));
 
   CodeGenOpt::Level OLvl = CodeGenOpt::Default;
   switch (OptLevel) {
@@ -147,7 +167,7 @@ int main(int argc, char **argv, char * const *envp) {
     return 1;
   case ' ': break;
   case '0': OLvl = CodeGenOpt::None; break;
-  case '1':
+  case '1': OLvl = CodeGenOpt::Less; break;
   case '2': OLvl = CodeGenOpt::Default; break;
   case '3': OLvl = CodeGenOpt::Aggressive; break;
   }
@@ -162,11 +182,9 @@ int main(int argc, char **argv, char * const *envp) {
     exit(1);
   }
 
-  EE->RegisterJITEventListener(createMacOSJITEventListener());
   EE->RegisterJITEventListener(createOProfileJITEventListener());
 
-  if (NoLazyCompilation)
-    EE->DisableLazyCompilation();
+  EE->DisableLazyCompilation(NoLazyCompilation);
 
   // If the user specifically requested an argv[0] to pass into the program,
   // do it now.
@@ -175,7 +193,7 @@ int main(int argc, char **argv, char * const *envp) {
   } else {
     // Otherwise, if there is a .bc suffix on the executable strip it off, it
     // might confuse the program.
-    if (InputFile.rfind(".bc") == InputFile.length() - 3)
+    if (StringRef(InputFile).endswith(".bc"))
       InputFile.erase(InputFile.length() - 3);
   }
 

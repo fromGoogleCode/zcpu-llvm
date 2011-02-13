@@ -63,6 +63,7 @@ protected:
   bool HasFSQRT;
   bool HasSTFIWX;
   bool HasLazyResolverStubs;
+  bool IsJITCodeModel;
   
   /// DarwinVers - Nonzero if this is a darwin platform.  Otherwise, the numeric
   /// version of the platform, e.g. 8 = 10.4 (Tiger), 9 = 10.5 (Leopard), etc.
@@ -101,8 +102,8 @@ public:
   const char *getTargetDataString() const {
     // Note, the alignment values for f64 and i64 on ppc64 in Darwin
     // documentation are wrong; these are correct (i.e. "what gcc does").
-    return isPPC64() ? "E-p:64:64-f64:64:64-i64:64:64-f128:64:128"
-                     : "E-p:32:32-f64:32:64-i64:32:64-f128:64:128";
+    return isPPC64() ? "E-p:64:64-f64:64:64-i64:64:64-f128:64:128-n32:64"
+                     : "E-p:32:32-f64:32:64-i64:32:64-f128:64:128-n32";
   }
 
   /// isPPC64 - Return true if we are generating code for 64-bit pointer mode.
@@ -124,6 +125,9 @@ public:
   bool hasLazyResolverStub(const GlobalValue *GV, 
                            const TargetMachine &TM) const;
   
+  // isJITCodeModel - True if we're generating code for the JIT
+  bool isJITCodeModel() const { return IsJITCodeModel; }
+
   // Specific obvious features.
   bool hasFSQRT() const { return HasFSQRT; }
   bool hasSTFIWX() const { return HasSTFIWX; }

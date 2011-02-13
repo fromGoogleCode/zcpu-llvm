@@ -16,6 +16,7 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/LLVMContext.h"
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/Support/CallSite.h"
 #include "llvm/Support/LeakDetector.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/StringPool.h"
@@ -29,8 +30,8 @@ using namespace llvm;
 
 // Explicit instantiations of SymbolTableListTraits since some of the methods
 // are not in the public header file...
-template class SymbolTableListTraits<Argument, Function>;
-template class SymbolTableListTraits<BasicBlock, Function>;
+template class llvm::SymbolTableListTraits<Argument, Function>;
+template class llvm::SymbolTableListTraits<BasicBlock, Function>;
 
 //===----------------------------------------------------------------------===//
 // Argument Implementation
@@ -73,28 +74,35 @@ unsigned Argument::getArgNo() const {
 /// hasByValAttr - Return true if this argument has the byval attribute on it
 /// in its containing function.
 bool Argument::hasByValAttr() const {
-  if (!isa<PointerType>(getType())) return false;
+  if (!getType()->isPointerTy()) return false;
   return getParent()->paramHasAttr(getArgNo()+1, Attribute::ByVal);
+}
+
+/// hasNestAttr - Return true if this argument has the nest attribute on
+/// it in its containing function.
+bool Argument::hasNestAttr() const {
+  if (!getType()->isPointerTy()) return false;
+  return getParent()->paramHasAttr(getArgNo()+1, Attribute::Nest);
 }
 
 /// hasNoAliasAttr - Return true if this argument has the noalias attribute on
 /// it in its containing function.
 bool Argument::hasNoAliasAttr() const {
-  if (!isa<PointerType>(getType())) return false;
+  if (!getType()->isPointerTy()) return false;
   return getParent()->paramHasAttr(getArgNo()+1, Attribute::NoAlias);
 }
 
 /// hasNoCaptureAttr - Return true if this argument has the nocapture attribute
 /// on it in its containing function.
 bool Argument::hasNoCaptureAttr() const {
-  if (!isa<PointerType>(getType())) return false;
+  if (!getType()->isPointerTy()) return false;
   return getParent()->paramHasAttr(getArgNo()+1, Attribute::NoCapture);
 }
 
 /// hasSRetAttr - Return true if this argument has the sret attribute on
 /// it in its containing function.
 bool Argument::hasStructRetAttr() const {
-  if (!isa<PointerType>(getType())) return false;
+  if (!getType()->isPointerTy()) return false;
   if (this != getParent()->arg_begin())
     return false; // StructRet param must be first param
   return getParent()->paramHasAttr(1, Attribute::StructRet);
@@ -148,12 +156,12 @@ Function::Function(const FunctionType *Ty, LinkageTypes Linkage,
   : GlobalValue(PointerType::getUnqual(Ty), 
                 Value::FunctionVal, 0, 0, Linkage, name) {
   assert(FunctionType::isValidReturnType(getReturnType()) &&
-         !isa<OpaqueType>(getReturnType()) && "invalid return type");
+         !getReturnType()->isOpaqueTy() && "invalid return type");
   SymTab = new ValueSymbolTable();
 
   // If the function has arguments, mark them as lazily built.
   if (Ty->getNumParams())
-    SubclassData = 1;   // Set the "has lazy arguments" bit.
+    setValueSubclassData(1);   // Set the "has lazy arguments" bit.
   
   // Make sure that we get added to a function
   LeakDetector::addGarbageObject(this);
@@ -182,13 +190,14 @@ void Function::BuildLazyArguments() const {
   // Create the arguments vector, all arguments start out unnamed.
   const FunctionType *FT = getFunctionType();
   for (unsigned i = 0, e = FT->getNumParams(); i != e; ++i) {
-    assert(FT->getParamType(i) != Type::getVoidTy(FT->getContext()) &&
+    assert(!FT->getParamType(i)->isVoidTy() &&
            "Cannot have void typed arguments!");
     ArgumentList.push_back(new Argument(FT->getParamType(i)));
   }
   
   // Clear the lazy arguments bit.
-  const_cast<Function*>(this)->SubclassData &= ~1;
+  unsigned SDC = getSubclassDataFromValue();
+  const_cast<Function*>(this)->setValueSubclassData(SDC &= ~1);
 }
 
 size_t Function::arg_size() const {
@@ -217,7 +226,20 @@ void Function::setParent(Module *parent) {
 void Function::dropAllReferences() {
   for (iterator I = begin(), E = end(); I != E; ++I)
     I->dropAllReferences();
-  BasicBlocks.clear();    // Delete all basic blocks...
+  
+  // Delete all basic blocks.
+  while (!BasicBlocks.empty()) {
+    // If there is still a reference to the block, it must be a 'blockaddress'
+    // constant pointing to it.  Just replace the BlockAddress with undef.
+    BasicBlock *BB = BasicBlocks.begin();
+    if (!BB->use_empty()) {
+      BlockAddress *BA = cast<BlockAddress>(BB->use_back());
+      BA->replaceAllUsesWith(UndefValue::get(BA->getType()));
+      BA->destroyConstant();
+    }
+    
+    BB->eraseFromParent();
+  }
 }
 
 void Function::addAttribute(unsigned i, Attributes attr) {
@@ -379,13 +401,16 @@ Function *Intrinsic::getDeclaration(Module *M, ID id, const Type **Tys,
 #include "llvm/Intrinsics.gen"
 #undef GET_LLVM_INTRINSIC_FOR_GCC_BUILTIN
 
-  /// hasAddressTaken - returns true if there are any uses of this function
-  /// other than direct calls or invokes to it.
-bool Function::hasAddressTaken() const {
-  for (Value::use_const_iterator I = use_begin(), E = use_end(); I != E; ++I) {
-    if (I.getOperandNo() != 0 ||
-        (!isa<CallInst>(*I) && !isa<InvokeInst>(*I)))
-      return true;
+/// hasAddressTaken - returns true if there are any uses of this function
+/// other than direct calls or invokes to it.
+bool Function::hasAddressTaken(const User* *PutOffender) const {
+  for (Value::const_use_iterator I = use_begin(), E = use_end(); I != E; ++I) {
+    const User *U = *I;
+    if (!isa<CallInst>(U) && !isa<InvokeInst>(U))
+      return PutOffender ? (*PutOffender = U, true) : true;
+    ImmutableCallSite CS(cast<Instruction>(U));
+    if (!CS.isCallee(I))
+      return PutOffender ? (*PutOffender = U, true) : true;
   }
   return false;
 }

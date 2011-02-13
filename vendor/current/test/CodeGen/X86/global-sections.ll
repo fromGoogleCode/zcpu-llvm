@@ -1,12 +1,12 @@
-; RUN: llvm-as < %s | llc -mtriple=i386-unknown-linux-gnu | FileCheck %s -check-prefix=LINUX
-; RUN: llvm-as < %s | llc -mtriple=i386-apple-darwin9.7 | FileCheck %s -check-prefix=DARWIN
+; RUN: llc < %s -mtriple=i386-unknown-linux-gnu | FileCheck %s -check-prefix=LINUX
+; RUN: llc < %s -mtriple=i386-apple-darwin9.7 | FileCheck %s -check-prefix=DARWIN
+; RUN: llc < %s -mtriple=i386-unknown-linux-gnu -fdata-sections | FileCheck %s -check-prefix=LINUX-SECTIONS
 
 
 ; int G1;
 @G1 = common global i32 0
 
 ; LINUX: .type   G1,@object
-; LINUX: .section .gnu.linkonce.b.G1,"aw",@nobits
 ; LINUX: .comm  G1,4,4
 
 ; DARWIN: .comm	_G1,4,2
@@ -32,6 +32,12 @@
 ; DARWIN: .globl _G3
 ; DARWIN: _G3:
 ; DARWIN:     .long _G1
+
+; LINUX:   .section        .rodata,"a",@progbits
+; LINUX:   .globl  G3
+
+; LINUX-SECTIONS: .section        .rodata.G3,"a",@progbits
+; LINUX-SECTIONS: .globl  G3
 
 
 ; _Complex long long const G4 = 34;
@@ -76,14 +82,14 @@
 ; LINUX:   .section	.gnu.linkonce.r.G6,"a",@progbits
 ; LINUX:   .weak	G6
 ; LINUX: G6:
-; LINUX:   .ascii	"\001"
+; LINUX:   .byte	1
 ; LINUX:   .size	G6, 1
 
 ; DARWIN:  .section __TEXT,__const_coal,coalesced
 ; DARWIN:  .globl _G6
 ; DARWIN:  .weak_definition _G6
 ; DARWIN:_G6:
-; DARWIN:  .ascii "\001"
+; DARWIN:  .byte 1
 
 
 @G7 = constant [10 x i8] c"abcdefghi\00"
@@ -98,10 +104,13 @@
 ; LINUX: G7:
 ; LINUX:	.asciz	"abcdefghi"
 
+; LINUX-SECTIONS: .section        .rodata.G7,"aMS",@progbits,1
+; LINUX-SECTIONS:	.globl G7
+
 
 @G8 = constant [4 x i16] [ i16 1, i16 2, i16 3, i16 0 ]
 
-; DARWIN:	.section	__TEXT,__ustring
+; DARWIN:	.section	__TEXT,__const
 ; DARWIN:	.globl _G8
 ; DARWIN: _G8:
 
@@ -111,7 +120,6 @@
 
 @G9 = constant [4 x i32] [ i32 1, i32 2, i32 3, i32 0 ]
 
-; DARWIN:	.section        __TEXT,__const
 ; DARWIN:	.globl _G9
 ; DARWIN: _G9:
 
@@ -120,4 +128,33 @@
 ; LINUX:G9
 
 
+@G10 = weak global [100 x i32] zeroinitializer, align 32 ; <[100 x i32]*> [#uses=0]
 
+
+; DARWIN: 	.section	__DATA,__datacoal_nt,coalesced
+; DARWIN: .globl _G10
+; DARWIN:	.weak_definition _G10
+; DARWIN:	.align	5
+; DARWIN: _G10:
+; DARWIN:	.space	400
+
+; LINUX:	.bss
+; LINUX:	.weak	G10
+; LINUX:	.align	32
+; LINUX: G10:
+; LINUX:	.zero	400
+
+
+
+;; Zero sized objects should round up to 1 byte in zerofill directives.
+; rdar://7886017
+@G11 = global [0 x i32] zeroinitializer
+@G12 = global {} zeroinitializer
+@G13 = global { [0 x {}] } zeroinitializer
+
+; DARWIN: .globl _G11
+; DARWIN: .zerofill __DATA,__common,_G11,1,2
+; DARWIN: .globl _G12
+; DARWIN: .zerofill __DATA,__common,_G12,1,3
+; DARWIN: .globl _G13
+; DARWIN: .zerofill __DATA,__common,_G13,1,3

@@ -20,37 +20,48 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/System/Path.h"
 
+#include <string>
 #include <vector>
+#include <utility>
 
 namespace llvmc {
 
   class LanguageMap;
+  typedef std::vector<std::pair<unsigned, std::string> > ArgsVector;
   typedef std::vector<llvm::sys::Path> PathVector;
+  typedef std::vector<std::string> StrVector;
   typedef llvm::StringSet<> InputLanguagesSet;
 
-  /// Tool - A class
+  /// Tool - Represents a single tool.
   class Tool : public llvm::RefCountedBaseVPTR<Tool> {
   public:
 
     virtual ~Tool() {}
 
-    virtual Action GenerateAction (const PathVector& inFiles,
-                                   bool  HasChildren,
-                                   const llvm::sys::Path& TempDir,
-                                   const InputLanguagesSet& InLangs,
-                                   const LanguageMap& LangMap) const = 0;
+    /// GenerateAction - Generate an Action given particular command-line
+    /// options. Returns non-zero value on error.
+    virtual int GenerateAction (Action& Out,
+                                const PathVector& inFiles,
+                                const bool HasChildren,
+                                const llvm::sys::Path& TempDir,
+                                const InputLanguagesSet& InLangs,
+                                const LanguageMap& LangMap) const = 0;
 
-    virtual Action GenerateAction (const llvm::sys::Path& inFile,
-                                   bool  HasChildren,
-                                   const llvm::sys::Path& TempDir,
-                                   const InputLanguagesSet& InLangs,
-                                   const LanguageMap& LangMap) const = 0;
+    /// GenerateAction - Generate an Action given particular command-line
+    /// options. Returns non-zero value on error.
+    virtual int GenerateAction (Action& Out,
+                                const llvm::sys::Path& inFile,
+                                const bool HasChildren,
+                                const llvm::sys::Path& TempDir,
+                                const InputLanguagesSet& InLangs,
+                                const LanguageMap& LangMap) const = 0;
 
     virtual const char*  Name() const = 0;
     virtual const char** InputLanguages() const = 0;
     virtual const char*  OutputLanguage() const = 0;
 
     virtual bool IsJoin() const = 0;
+    virtual bool WorksOnEmpty() const = 0;
 
   protected:
     /// OutFileName - Generate the output file name.
@@ -58,6 +69,8 @@ namespace llvmc {
                                 const llvm::sys::Path& TempDir,
                                 bool StopCompilation,
                                 const char* OutputSuffix) const;
+
+    StrVector SortArgs(ArgsVector& Args) const;
   };
 
   /// JoinTool - A Tool that has an associated input file list.
@@ -67,11 +80,13 @@ namespace llvmc {
     void ClearJoinList() { JoinList_.clear(); }
     bool JoinListEmpty() const { return JoinList_.empty(); }
 
-    Action GenerateAction(bool  HasChildren,
-                          const llvm::sys::Path& TempDir,
-                          const InputLanguagesSet& InLangs,
-                          const LanguageMap& LangMap) const {
-      return GenerateAction(JoinList_, HasChildren, TempDir, InLangs, LangMap);
+    int GenerateAction(Action& Out,
+                       const bool HasChildren,
+                       const llvm::sys::Path& TempDir,
+                       const InputLanguagesSet& InLangs,
+                       const LanguageMap& LangMap) const {
+      return GenerateAction(Out, JoinList_, HasChildren, TempDir, InLangs,
+                            LangMap);
     }
     // We shouldn't shadow base class's version of GenerateAction.
     using Tool::GenerateAction;

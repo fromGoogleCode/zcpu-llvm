@@ -144,18 +144,16 @@ file prints this (at the time of this writing):</p>
   <b>bit</b> mayLoad = 0;
   <b>bit</b> mayStore = 0;
   <b>bit</b> isImplicitDef = 0;
-  <b>bit</b> isTwoAddress = 1;
   <b>bit</b> isConvertibleToThreeAddress = 1;
   <b>bit</b> isCommutable = 1;
   <b>bit</b> isTerminator = 0;
   <b>bit</b> isReMaterializable = 0;
   <b>bit</b> isPredicable = 0;
   <b>bit</b> hasDelaySlot = 0;
-  <b>bit</b> usesCustomDAGSchedInserter = 0;
+  <b>bit</b> usesCustomInserter = 0;
   <b>bit</b> hasCtrlDep = 0;
   <b>bit</b> isNotDuplicable = 0;
   <b>bit</b> hasSideEffects = 0;
-  <b>bit</b> mayHaveSideEffects = 0;
   <b>bit</b> neverHasSideEffects = 0;
   InstrItinClass Itinerary = NoItinerary;
   <b>string</b> Constraints = "";
@@ -189,7 +187,7 @@ backend, and is only shown as an example.</p>
 
 <p>As you can see, a lot of information is needed for every instruction
 supported by the code generator, and specifying it all manually would be
-unmaintainble, prone to bugs, and tiring to do in the first place.  Because we
+unmaintainable, prone to bugs, and tiring to do in the first place.  Because we
 are using TableGen, all of the information was derived from the following
 definition:</p>
 
@@ -334,8 +332,9 @@ The TableGen types are:</p>
   <dd>This type represents a nestable directed graph of elements.</dd>
 
 <dt><tt><b>code</b></tt></dt>
-  <dd>This represents a big hunk of text. NOTE: I don't remember why this is
-  distinct from string!</dd>
+  <dd>This represents a big hunk of text.  This is lexically distinct from 
+  string values because it doesn't require escapeing double quotes and other
+  common characters that occur in code.</dd>
 </dl>
 
 <p>To date, these types have been sufficient for describing things that
@@ -398,13 +397,6 @@ which case the user must specify it explicitly.</dd>
   <dd>a dag value.  The first element is required to be a record definition, the
   remaining elements in the list may be arbitrary other values, including nested
   `<tt>dag</tt>' values.</dd>
-<dt><tt>(implicit a)</tt></dt>
-  <dd>an implicitly defined physical register.  This tells the dag instruction
-  selection emitter the input pattern's extra definitions matches implicit
-  physical register definitions.</dd>
-<dt><tt>(parallel (a), (b))</tt></dt>
-  <dd>a list of dags specifying parallel operations which map to the same
-  instruction.</dd>
 <dt><tt>!strconcat(a, b)</tt></dt>
   <dd>A string value that is the result of concatenating the 'a' and 'b'
   strings.</dd>
@@ -429,7 +421,12 @@ class.  This operation is analogous to $(foreach) in GNU make.</dd>
 <dt><tt>!null(a)</tt></dt>
   <dd>An integer {0,1} indicating whether list 'a' is empty.</dd>
 <dt><tt>!if(a,b,c)</tt></dt>
-  <dd>'b' if the result of integer operator 'a' is nonzero, 'c' otherwise.</dd>
+  <dd>'b' if the result of 'int' or 'bit' operator 'a' is nonzero,
+      'c' otherwise.</dd>
+<dt><tt>!eq(a,b)</tt></dt>
+  <dd>Integer one if string a is equal to string b, zero otherwise.  This
+      only operates on string, int and bit objects.  Use !cast<string> to
+      compare other types of objects.</dd>
 </dl>
 
 <p>Note that all of the values have rules specifying how they convert to values
@@ -690,6 +687,91 @@ Here is an example TableGen fragment that shows this idea:
 </pre>
 </div>
 
+<p>
+A defm can also be used inside a multiclass providing several levels of
+multiclass instanciations.
+</p>
+
+<div class="doc_code">
+<pre>
+<b>class</b> Instruction&lt;bits&lt;4&gt; opc, string Name&gt; {
+  bits&lt;4&gt; opcode = opc;
+  string name = Name;
+}
+
+<b>multiclass</b> basic_r&lt;bits&lt;4&gt; opc&gt; {
+  <b>def</b> rr : Instruction&lt;opc, "rr"&gt;;
+  <b>def</b> rm : Instruction&lt;opc, "rm"&gt;;
+}
+
+<b>multiclass</b> basic_s&lt;bits&lt;4&gt; opc&gt; {
+  <b>defm</b> SS : basic_r&lt;opc&gt;;
+  <b>defm</b> SD : basic_r&lt;opc&gt;;
+  <b>def</b> X : Instruction&lt;opc, "x"&gt;;
+}
+
+<b>multiclass</b> basic_p&lt;bits&lt;4&gt; opc&gt; {
+  <b>defm</b> PS : basic_r&lt;opc&gt;;
+  <b>defm</b> PD : basic_r&lt;opc&gt;;
+  <b>def</b> Y : Instruction&lt;opc, "y"&gt;;
+}
+
+<b>defm</b> ADD : basic_s&lt;0xf&gt;, basic_p&lt;0xf&gt;;
+...
+
+<i>// Results</i>
+<b>def</b> ADDPDrm { ...
+<b>def</b> ADDPDrr { ...
+<b>def</b> ADDPSrm { ...
+<b>def</b> ADDPSrr { ...
+<b>def</b> ADDSDrm { ...
+<b>def</b> ADDSDrr { ...
+<b>def</b> ADDY { ...
+<b>def</b> ADDX { ...
+</pre>
+</div>
+
+<p>
+defm declarations can inherit from classes too, the
+rule to follow is that the class list must start after the
+last multiclass, and there must be at least one multiclass
+before them.
+</p>
+
+<div class="doc_code">
+<pre>
+<b>class</b> XD { bits&lt;4&gt; Prefix = 11; }
+<b>class</b> XS { bits&lt;4&gt; Prefix = 12; }
+
+<b>class</b> I&lt;bits<4&gt; op> {
+  bits&lt;4&gt; opcode = op;
+}
+
+<b>multiclass</b> R {
+  <b>def</b> rr : I&lt;4&gt;;
+  <b>def</b> rm : I&lt;2&gt;;
+}
+
+<b>multiclass</b> Y {
+  <b>defm</b> SS : R, XD;
+  <b>defm</b> SD : R, XS;
+}
+
+<b>defm</b> Instr : Y;
+
+<i>// Results</i>
+<b>def</b> InstrSDrm {
+  bits&lt;4&gt; opcode = { 0, 0, 1, 0 };
+  bits&lt;4&gt; Prefix = { 1, 1, 0, 0 };
+}
+...
+<b>def</b> InstrSSrr {
+  bits&lt;4&gt; opcode = { 0, 1, 0, 0 };
+  bits&lt;4&gt; Prefix = { 1, 0, 1, 1 };
+}
+</pre>
+</div>
+
 </div>
 
 <!-- ======================================================================= -->
@@ -757,6 +839,48 @@ examples:</p>
 need to be added to several records, and the records do not otherwise need to be
 opened, as in the case with the <tt>CALL*</tt> instructions above.</p>
 
+<p>It's also possible to use "let" expressions inside multiclasses, providing
+more ways to factor out commonality from the records, specially if using
+several levels of multiclass instanciations. This also avoids the need of using
+"let" expressions within subsequent records inside a multiclass.</p> 
+
+<div class="doc_code">
+<pre>
+<b>multiclass </b>basic_r&lt;bits&lt;4&gt; opc&gt; {
+  <b>let </b>Predicates = [HasSSE2] in {
+    <b>def </b>rr : Instruction&lt;opc, "rr"&gt;;
+    <b>def </b>rm : Instruction&lt;opc, "rm"&gt;;
+  }
+  <b>let </b>Predicates = [HasSSE3] in
+    <b>def </b>rx : Instruction&lt;opc, "rx"&gt;;
+}
+
+<b>multiclass </b>basic_ss&lt;bits&lt;4&gt; opc&gt; {
+  <b>let </b>IsDouble = 0 in
+    <b>defm </b>SS : basic_r&lt;opc&gt;;
+
+  <b>let </b>IsDouble = 1 in
+    <b>defm </b>SD : basic_r&lt;opc&gt;;
+}
+
+<b>defm </b>ADD : basic_ss&lt;0xf&gt;;
+</pre>
+</div>
+
+<!-- *********************************************************************** -->
+<div class="doc_section"><a name="codegen">Code Generator backend info</a></div>
+<!-- *********************************************************************** -->
+
+<p>Expressions used by code generator to describe instructions and isel
+patterns:</p>
+
+<div class="doc_text">
+
+<dt><tt>(implicit a)</tt></dt>
+  <dd>an implicitly defined physical register.  This tells the dag instruction
+  selection emitter the input pattern's extra definitions matches implicit
+  physical register definitions.</dd>
+
 </div>
 
 <!-- *********************************************************************** -->
@@ -782,7 +906,7 @@ This should highlight the APIs in <tt>TableGen/Record.h</tt>.</p>
 
   <a href="mailto:sabre@nondot.org">Chris Lattner</a><br>
   <a href="http://llvm.org">LLVM Compiler Infrastructure</a><br>
-  Last modified: $Date: 2009-08-05 08:42:44 -0700 (Wed, 05 Aug 2009) $
+  Last modified: $Date: 2010-06-21 15:35:09 -0500 (Mon, 21 Jun 2010) $
 </address>
 
 </body>

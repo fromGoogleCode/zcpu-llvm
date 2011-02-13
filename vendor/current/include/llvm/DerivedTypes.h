@@ -51,10 +51,6 @@ protected:
   ///
   void dropAllTypeUses();
 
-  /// unlockedRefineAbstractTypeTo - Internal version of refineAbstractTypeTo
-  /// that performs no locking.  Only used for internal recursion.
-  void unlockedRefineAbstractTypeTo(const Type *NewType);
-  
 public:
 
   //===--------------------------------------------------------------------===//
@@ -300,7 +296,6 @@ public:
   bool isPacked() const { return (0 != getSubclassData()) ? true : false; }
 };
 
-
 /// SequentialType - This is the superclass of the array, pointer and vector
 /// type classes.  All of these represent "arrays" in memory.  The array type
 /// represents a specifically sized array, pointer types are unsized/unknown
@@ -496,15 +491,14 @@ public:
 /// OpaqueType - Class to represent abstract types
 ///
 class OpaqueType : public DerivedType {
+  friend class LLVMContextImpl;
   OpaqueType(const OpaqueType &);                   // DO NOT IMPLEMENT
   const OpaqueType &operator=(const OpaqueType &);  // DO NOT IMPLEMENT
   OpaqueType(LLVMContext &C);
 public:
   /// OpaqueType::get - Static factory method for the OpaqueType class...
   ///
-  static OpaqueType *get(LLVMContext &C) {
-    return new OpaqueType(C);           // All opaque types are distinct
-  }
+  static OpaqueType *get(LLVMContext &C);
 
   // Implement support for type inquiry through isa, cast, and dyn_cast:
   static inline bool classof(const OpaqueType *) { return true; }

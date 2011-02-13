@@ -42,15 +42,12 @@
 #include "llvm/LLVMContext.h"
 #include "llvm/Module.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/CallSite.h"
 #include "llvm/Support/CFG.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/InstVisitor.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/VectorExtras.h"
-#include "llvm/ADT/SmallVector.h"
 #include <map>
 using namespace llvm;
 
@@ -62,8 +59,7 @@ STATISTIC(InvokesTransformed , "Number of invokes modified");
 namespace {
   //===--------------------------------------------------------------------===//
   // LowerSetJmp pass implementation.
-  class VISIBILITY_HIDDEN LowerSetJmp : public ModulePass,
-                      public InstVisitor<LowerSetJmp> {
+  class LowerSetJmp : public ModulePass, public InstVisitor<LowerSetJmp> {
     // LLVM library functions...
     Constant *InitSJMap;        // __llvm_sjljeh_init_setjmpmap
     Constant *DestroySJMap;     // __llvm_sjljeh_destroy_setjmpmap
@@ -110,10 +106,10 @@ namespace {
     void TransformLongJmpCall(CallInst* Inst);
     void TransformSetJmpCall(CallInst* Inst);
 
-    bool IsTransformableFunction(const std::string& Name);
+    bool IsTransformableFunction(StringRef Name);
   public:
     static char ID; // Pass identification, replacement for typeid
-    LowerSetJmp() : ModulePass(&ID) {}
+    LowerSetJmp() : ModulePass(ID) {}
 
     void visitCallInst(CallInst& CI);
     void visitInvokeInst(InvokeInst& II);
@@ -126,7 +122,7 @@ namespace {
 } // end anonymous namespace
 
 char LowerSetJmp::ID = 0;
-static RegisterPass<LowerSetJmp> X("lowersetjmp", "Lower Set Jump");
+INITIALIZE_PASS(LowerSetJmp, "lowersetjmp", "Lower Set Jump", false, false);
 
 // run - Run the transformation on the program. We grab the function
 // prototypes for longjmp and setjmp. If they are used in the program,
@@ -201,7 +197,7 @@ bool LowerSetJmp::runOnModule(Module& M) {
 // This function is always successful, unless it isn't.
 bool LowerSetJmp::doInitialization(Module& M)
 {
-  const Type *SBPTy = PointerType::getUnqual(Type::getInt8Ty(M.getContext()));
+  const Type *SBPTy = Type::getInt8PtrTy(M.getContext());
   const Type *SBPPTy = PointerType::getUnqual(SBPTy);
 
   // N.B. See llvm/runtime/GCCLibraries/libexception/SJLJ-Exception.h for
@@ -251,13 +247,8 @@ bool LowerSetJmp::doInitialization(Module& M)
 // "llvm.{setjmp,longjmp}" functions and none of the setjmp/longjmp error
 // handling functions (beginning with __llvm_sjljeh_...they don't throw
 // exceptions).
-bool LowerSetJmp::IsTransformableFunction(const std::string& Name) {
-  std::string SJLJEh("__llvm_sjljeh");
-
-  if (Name.size() > SJLJEh.size())
-    return std::string(Name.begin(), Name.begin() + SJLJEh.size()) != SJLJEh;
-
-  return true;
+bool LowerSetJmp::IsTransformableFunction(StringRef Name) {
+  return !Name.startswith("__llvm_sjljeh_");
 }
 
 // TransformLongJmpCall - Transform a longjmp call into a call to the
@@ -265,19 +256,16 @@ bool LowerSetJmp::IsTransformableFunction(const std::string& Name) {
 // throwing the exception for us.
 void LowerSetJmp::TransformLongJmpCall(CallInst* Inst)
 {
-  const Type* SBPTy =
-        PointerType::getUnqual(Type::getInt8Ty(Inst->getContext()));
+  const Type* SBPTy = Type::getInt8PtrTy(Inst->getContext());
 
   // Create the call to "__llvm_sjljeh_throw_longjmp". This takes the
   // same parameters as "longjmp", except that the buffer is cast to a
   // char*. It returns "void", so it doesn't need to replace any of
   // Inst's uses and doesn't get a name.
   CastInst* CI = 
-    new BitCastInst(Inst->getOperand(1), SBPTy, "LJBuf", Inst);
-  SmallVector<Value *, 2> Args;
-  Args.push_back(CI);
-  Args.push_back(Inst->getOperand(2));
-  CallInst::Create(ThrowLongJmp, Args.begin(), Args.end(), "", Inst);
+    new BitCastInst(Inst->getArgOperand(0), SBPTy, "LJBuf", Inst);
+  Value *Args[] = { CI, Inst->getArgOperand(1) };
+  CallInst::Create(ThrowLongJmp, Args, Args + 2, "", Inst);
 
   SwitchValuePair& SVP = SwitchValMap[Inst->getParent()->getParent()];
 
@@ -319,7 +307,7 @@ AllocaInst* LowerSetJmp::GetSetJmpMap(Function* Func)
 
   // Fill in the alloca and call to initialize the SJ map.
   const Type *SBPTy =
-        PointerType::getUnqual(Type::getInt8Ty(Func->getContext()));
+        Type::getInt8PtrTy(Func->getContext());
   AllocaInst* Map = new AllocaInst(SBPTy, 0, "SJMap", Inst);
   CallInst::Create(InitSJMap, Map, "", Inst);
   return SJMap[Func] = Map;
@@ -389,14 +377,14 @@ void LowerSetJmp::TransformSetJmpCall(CallInst* Inst)
 
   // Add this setjmp to the setjmp map.
   const Type* SBPTy =
-          PointerType::getUnqual(Type::getInt8Ty(Inst->getContext()));
+          Type::getInt8PtrTy(Inst->getContext());
   CastInst* BufPtr = 
-    new BitCastInst(Inst->getOperand(1), SBPTy, "SBJmpBuf", Inst);
-  std::vector<Value*> Args = 
-    make_vector<Value*>(GetSetJmpMap(Func), BufPtr,
-                        ConstantInt::get(Type::getInt32Ty(Inst->getContext()),
-                                         SetJmpIDMap[Func]++), 0);
-  CallInst::Create(AddSJToMap, Args.begin(), Args.end(), "", Inst);
+    new BitCastInst(Inst->getArgOperand(0), SBPTy, "SBJmpBuf", Inst);
+  Value *Args[] = {
+    GetSetJmpMap(Func), BufPtr,
+    ConstantInt::get(Type::getInt32Ty(Inst->getContext()), SetJmpIDMap[Func]++)
+  };
+  CallInst::Create(AddSJToMap, Args, Args + 3, "", Inst);
 
   // We are guaranteed that there are no values live across basic blocks
   // (because we are "not in SSA form" yet), but there can still be values live
@@ -418,12 +406,14 @@ void LowerSetJmp::TransformSetJmpCall(CallInst* Inst)
     // Loop over all of the uses of instruction.  If any of them are after the
     // call, "spill" the value to the stack.
     for (Value::use_iterator UI = II->use_begin(), E = II->use_end();
-         UI != E; ++UI)
-      if (cast<Instruction>(*UI)->getParent() != ABlock ||
-          InstrsAfterCall.count(cast<Instruction>(*UI))) {
+         UI != E; ++UI) {
+      User *U = *UI;
+      if (cast<Instruction>(U)->getParent() != ABlock ||
+          InstrsAfterCall.count(cast<Instruction>(U))) {
         DemoteRegToStack(*II);
         break;
       }
+    }
   InstrsAfterCall.clear();
 
   // Change the setjmp call into a branch statement. We'll remove the
@@ -486,7 +476,8 @@ void LowerSetJmp::visitCallInst(CallInst& CI)
 
   // Construct the new "invoke" instruction.
   TerminatorInst* Term = OldBB->getTerminator();
-  std::vector<Value*> Params(CI.op_begin() + 1, CI.op_end());
+  CallSite CS(&CI);
+  std::vector<Value*> Params(CS.arg_begin(), CS.arg_end());
   InvokeInst* II =
     InvokeInst::Create(CI.getCalledValue(), NewBB, PrelimBBMap[Func],
                        Params.begin(), Params.end(), CI.getName(), Term);

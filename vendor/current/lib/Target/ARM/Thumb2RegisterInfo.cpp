@@ -1,4 +1,4 @@
-//===- Thumb2RegisterInfo.cpp - Thumb-2 Register Information -------*- C++ -*-===//
+//===- Thumb2RegisterInfo.cpp - Thumb-2 Register Information ----*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,7 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file contains the Thumb-2 implementation of the TargetRegisterInfo class.
+// This file contains the Thumb-2 implementation of the TargetRegisterInfo
+// class.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,7 +33,6 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
 
@@ -52,16 +52,11 @@ void Thumb2RegisterInfo::emitLoadConstPool(MachineBasicBlock &MBB,
                                            unsigned PredReg) const {
   MachineFunction &MF = *MBB.getParent();
   MachineConstantPool *ConstantPool = MF.getConstantPool();
-  Constant *C = ConstantInt::get(
+  const Constant *C = ConstantInt::get(
            Type::getInt32Ty(MBB.getParent()->getFunction()->getContext()), Val);
   unsigned Idx = ConstantPool->getConstantPoolIndex(C, 4);
 
   BuildMI(MBB, MBBI, dl, TII.get(ARM::t2LDRpci))
     .addReg(DestReg, getDefRegState(true), SubIdx)
     .addConstantPoolIndex(Idx).addImm((int64_t)ARMCC::AL).addReg(0);
-}
-
-bool Thumb2RegisterInfo::
-requiresRegisterScavenging(const MachineFunction &MF) const {
-  return true;
 }

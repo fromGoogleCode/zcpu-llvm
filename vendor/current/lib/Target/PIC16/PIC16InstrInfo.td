@@ -134,7 +134,7 @@ include "PIC16InstrFormats.td"
 //===----------------------------------------------------------------------===//
 
 // W = W Op F : Load the value from F and do Op to W.
-let isTwoAddress = 1, mayLoad = 1 in
+let Constraints = "$src = $dst", mayLoad = 1 in
 class BinOpFW<bits<6> OpCode, string OpcStr, SDNode OpNode>:
   ByteFormat<OpCode, (outs GPR:$dst),
              (ins GPR:$src, i8imm:$offset, i8mem:$ptrlo, i8imm:$ptrhi),
@@ -146,12 +146,12 @@ class BinOpFW<bits<6> OpCode, string OpcStr, SDNode OpNode>:
 // F = F Op W : Load the value from F, do op with W and store in F.
 // This insn class is not marked as TwoAddress because the reg is
 // being used as a source operand only. (Remember a TwoAddress insn
-// needs a copyRegToReg.)
+// needs a copy.)
 let mayStore = 1 in
 class BinOpWF<bits<6> OpCode, string OpcStr, SDNode OpNode>:
   ByteFormat<OpCode, (outs),
              (ins GPR:$src, i8imm:$offset, i8mem:$ptrlo, i8imm:$ptrhi),
-              !strconcat(OpcStr, " $ptrlo + $offset"),
+              !strconcat(OpcStr, " $ptrlo + $offset, F"),
              [(PIC16Store (OpNode GPR:$src, (PIC16Load diraddr:$ptrlo,
                                              (i8 imm:$ptrhi),
                                              (i8 imm:$offset))),
@@ -160,8 +160,8 @@ class BinOpWF<bits<6> OpCode, string OpcStr, SDNode OpNode>:
                                              )]>;
 
 // W = W Op L : Do Op of L with W and place result in W.
-let isTwoAddress = 1 in
-class BinOpLW<bits<6> opcode, string OpcStr, SDNode OpNode> :
+let Constraints = "$src = $dst" in
+class BinOpWL<bits<6> opcode, string OpcStr, SDNode OpNode> :
   LiteralFormat<opcode, (outs GPR:$dst),
                 (ins GPR:$src, i8imm:$literal),
                 !strconcat(OpcStr, " $literal"),
@@ -220,7 +220,7 @@ def set_fsrlo:
              "movwf ${fsr}L",
              []>;
 
-let isTwoAddress = 1 in
+let Constraints = "$src = $dst" in
 def set_fsrhi:
   ByteFormat<0, (outs FSR16:$dst), 
              (ins FSR16:$src, GPR:$val),
@@ -234,8 +234,8 @@ def set_pclath:
              [(set PCLATHR:$dst , (MTPCLATH GPR:$val))]>;
 
 //----------------------------
-// copyRegToReg 
-// copyRegToReg insns. These are dummy. They should always be deleted
+// copyPhysReg 
+// copyPhysReg insns. These are dummy. They should always be deleted
 // by the optimizer and never be present in the final generated code.
 // if they are, then we have to write correct macros for these insns.
 //----------------------------
@@ -362,7 +362,7 @@ def addwfc: BinOpWF<0, "addwfc", adde>;  // With Carry.
 }
 
 // W -= [F] ; load from F and sub the value from W.
-let isTwoAddress = 1, mayLoad = 1 in
+let Constraints = "$src = $dst", mayLoad = 1 in
 class SUBFW<bits<6> OpCode, string OpcStr, SDNode OpNode>:
   ByteFormat<OpCode, (outs GPR:$dst),
              (ins GPR:$src, i8imm:$offset, i8mem:$ptrlo, i8imm:$ptrhi),
@@ -404,33 +404,46 @@ def subwf_cc: SUBWF<0, "subwf", PIC16Subcc>;
 
 // addlw 
 let Defs = [STATUS] in {
-def addlw_1 : BinOpLW<0, "addlw", add>;
-def addlw_2 : BinOpLW<0, "addlw", addc>;
+def addlw_1 : BinOpWL<0, "addlw", add>;
+def addlw_2 : BinOpWL<0, "addlw", addc>;
 
 let Uses = [STATUS] in
-def addlwc : BinOpLW<0, "addlwc", adde>; // With Carry. (Assembler macro).
+def addlwc : BinOpWL<0, "addlwc", adde>; // With Carry. (Assembler macro).
 
 // bitwise operations involving a literal and w.
-def andlw : BinOpLW<0, "andlw", and>;
-def xorlw : BinOpLW<0, "xorlw", xor>;
-def orlw  : BinOpLW<0, "iorlw", or>;
+def andlw : BinOpWL<0, "andlw", and>;
+def xorlw : BinOpWL<0, "xorlw", xor>;
+def orlw  : BinOpWL<0, "iorlw", or>;
 }
 
 // sublw 
 // W = C - W ; sub W from literal. (Without borrow).
-let isTwoAddress = 1 in
-class SUBLW<bits<6> opcode, SDNode OpNode> :
+let Constraints = "$src = $dst" in
+class SUBLW<bits<6> opcode, string OpcStr, SDNode OpNode> :
   LiteralFormat<opcode, (outs GPR:$dst),
                 (ins GPR:$src, i8imm:$literal),
-                "sublw $literal",
+                !strconcat(OpcStr, " $literal"),
                 [(set GPR:$dst, (OpNode (i8 imm:$literal), GPR:$src))]>;
+// subwl 
+// W = W - C ; sub literal from W  (Without borrow).
+let Constraints = "$src = $dst" in
+class SUBWL<bits<6> opcode, string OpcStr, SDNode OpNode> :
+  LiteralFormat<opcode, (outs GPR:$dst),
+                (ins GPR:$src, i8imm:$literal),
+                !strconcat(OpcStr, " $literal"),
+                [(set GPR:$dst, (OpNode GPR:$src, (i8 imm:$literal)))]>;
 
 let Defs = [STATUS] in {
-def sublw_1 : SUBLW<0, sub>;
-def sublw_2 : SUBLW<0, subc>;
+def sublw_1 : SUBLW<0, "sublw", sub>;
+def sublw_2 : SUBLW<0, "sublw", subc>;
+def sublw_3 : SUBLW<0, "sublwb", sube>; // With borrow (Assembler macro).
+
+def sublw_4 : SUBWL<0, "subwl", sub>;   // Assembler macro replace with addlw
+def sublw_5 : SUBWL<0, "subwl", subc>;  // Assembler macro replace with addlw
+def sublw_6 : SUBWL<0, "subwlb", sube>; // With borrow (Assembler macro).
 }
 let Defs = [STATUS], isTerminator = 1 in 
-def sublw_cc : SUBLW<0, PIC16Subcc>;
+def sublw_cc : SUBLW<0, "sublw", PIC16Subcc>;
 
 // Call instruction.
 let isCall = 1,
@@ -467,9 +480,9 @@ def br_uncond: ControlFormat<0x0, (outs), (ins brtarget:$dst),
                           "goto $dst",
                           [(br bb:$dst)]>;
 
-// SELECT_CC_* - Used to implement the SELECT_CC DAG operation.  Expanded by the
-// scheduler into a branch sequence.
-let usesCustomDAGSchedInserter = 1 in {   // Expanded by the scheduler.
+// SELECT_CC_* - Used to implement the SELECT_CC DAG operation.  Expanded after
+// instruction selection into a branch sequence.
+let usesCustomInserter = 1 in {   // Expanded after instruction selection.
   def SELECT_CC_Int_ICC
    : Pseudo<(outs GPR:$dst), (ins GPR:$T, GPR:$F, i8imm:$Cond),
             "; SELECT_CC_Int_ICC PSEUDO!",

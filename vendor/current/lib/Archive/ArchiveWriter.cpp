@@ -12,12 +12,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "ArchiveInternals.h"
-#include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/Module.h"
 #include "llvm/ADT/OwningPtr.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/System/Signals.h"
 #include "llvm/System/Process.h"
-#include "llvm/ModuleProvider.h"
+#include "llvm/System/Signals.h"
 #include <fstream>
 #include <ostream>
 #include <iomanip>
@@ -95,7 +95,7 @@ Archive::fillHeader(const ArchiveMember &mbr, ArchiveMemberHeader& hdr,
   memcpy(hdr.date,buffer,12);
 
   // Get rid of trailing blanks in the name
-  std::string mbrPath = mbr.getPath().toString();
+  std::string mbrPath = mbr.getPath().str();
   size_t mbrLen = mbrPath.length();
   while (mbrLen > 0 && mbrPath[mbrLen-1] == ' ') {
     mbrPath.erase(mbrLen-1,1);
@@ -173,10 +173,10 @@ Archive::addFileBefore(const sys::Path& filePath, iterator where,
   mbr->info = *FSInfo;
 
   unsigned flags = 0;
-  bool hasSlash = filePath.toString().find('/') != std::string::npos;
+  bool hasSlash = filePath.str().find('/') != std::string::npos;
   if (hasSlash)
     flags |= ArchiveMember::HasPathFlag;
-  if (hasSlash || filePath.toString().length() > 15)
+  if (hasSlash || filePath.str().length() > 15)
     flags |= ArchiveMember::HasLongFilenameFlag;
   std::string magic;
   mbr->path.getMagicNumber(magic,4);
@@ -220,18 +220,16 @@ Archive::writeMember(
   }
 
   // Now that we have the data in memory, update the
-  // symbol table if its a bitcode file.
+  // symbol table if it's a bitcode file.
   if (CreateSymbolTable && member.isBitcode()) {
     std::vector<std::string> symbols;
-    std::string FullMemberName = archPath.toString() + "(" +
-      member.getPath().toString()
+    std::string FullMemberName = archPath.str() + "(" + member.getPath().str()
       + ")";
-    ModuleProvider* MP = 
-      GetBitcodeSymbols((const unsigned char*)data,fSize,
-                        FullMemberName, Context, symbols, ErrMsg);
+    Module* M = 
+      GetBitcodeSymbols(data, fSize, FullMemberName, Context, symbols, ErrMsg);
 
     // If the bitcode parsed successfully
-    if ( MP ) {
+    if ( M ) {
       for (std::vector<std::string>::iterator SI = symbols.begin(),
            SE = symbols.end(); SI != SE; ++SI) {
 
@@ -245,11 +243,11 @@ Archive::writeMember(
         }
       }
       // We don't need this module any more.
-      delete MP;
+      delete M;
     } else {
       delete mFile;
       if (ErrMsg)
-        *ErrMsg = "Can't parse bitcode member: " + member.getPath().toString()
+        *ErrMsg = "Can't parse bitcode member: " + member.getPath().str()
           + ": " + *ErrMsg;
       return true;
     }
@@ -266,8 +264,8 @@ Archive::writeMember(
 
   // Write the long filename if its long
   if (writeLongName) {
-    ARFile.write(member.getPath().toString().data(),
-                 member.getPath().toString().length());
+    ARFile.write(member.getPath().str().data(),
+                 member.getPath().str().length());
   }
 
   // Write the (possibly compressed) member's content to the file.
@@ -368,10 +366,9 @@ Archive::writeToDisk(bool CreateSymbolTable, bool TruncateNames, bool Compress,
 
   // Check for errors opening or creating archive file.
   if (!ArchiveFile.is_open() || ArchiveFile.bad()) {
-    if (TmpArchive.exists())
-      TmpArchive.eraseFromDisk();
+    TmpArchive.eraseFromDisk();
     if (ErrMsg)
-      *ErrMsg = "Error opening archive file: " + archPath.toString();
+      *ErrMsg = "Error opening archive file: " + archPath.str();
     return true;
   }
 
@@ -389,8 +386,7 @@ Archive::writeToDisk(bool CreateSymbolTable, bool TruncateNames, bool Compress,
   for (MembersList::iterator I = begin(), E = end(); I != E; ++I) {
     if (writeMember(*I, ArchiveFile, CreateSymbolTable,
                      TruncateNames, Compress, ErrMsg)) {
-      if (TmpArchive.exists())
-        TmpArchive.eraseFromDisk();
+      TmpArchive.eraseFromDisk();
       ArchiveFile.close();
       return true;
     }
@@ -422,10 +418,9 @@ Archive::writeToDisk(bool CreateSymbolTable, bool TruncateNames, bool Compress,
 
     std::ofstream FinalFile(FinalFilePath.c_str(), io_mode);
     if (!FinalFile.is_open() || FinalFile.bad()) {
-      if (TmpArchive.exists())
-        TmpArchive.eraseFromDisk();
+      TmpArchive.eraseFromDisk();
       if (ErrMsg)
-        *ErrMsg = "Error opening archive file: " + FinalFilePath.toString();
+        *ErrMsg = "Error opening archive file: " + FinalFilePath.str();
       return true;
     }
 
@@ -440,8 +435,7 @@ Archive::writeToDisk(bool CreateSymbolTable, bool TruncateNames, bool Compress,
     if (foreignST) {
       if (writeMember(*foreignST, FinalFile, false, false, false, ErrMsg)) {
         FinalFile.close();
-        if (TmpArchive.exists())
-          TmpArchive.eraseFromDisk();
+        TmpArchive.eraseFromDisk();
         return true;
       }
     }

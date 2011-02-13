@@ -12,37 +12,20 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Support/Streams.h"
 #include "llvm/Support/SystemUtils.h"
 #include "llvm/System/Process.h"
 #include "llvm/System/Program.h"
-#include <ostream>
+#include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
-bool llvm::CheckBitcodeOutputToConsole(raw_ostream* stream_to_check,
+bool llvm::CheckBitcodeOutputToConsole(raw_ostream &stream_to_check,
                                        bool print_warning) {
-  if (stream_to_check == &outs() &&
-      sys::Process::StandardOutIsDisplayed()) {
+  if (stream_to_check.is_displayed()) {
     if (print_warning) {
-      cerr << "WARNING: You're attempting to print out a bitcode file.\n"
-           << "This is inadvisable as it may cause display problems. If\n"
-           << "you REALLY want to taste LLVM bitcode first-hand, you\n"
-           << "can force output with the `-f' option.\n\n";
-    }
-    return true;
-  }
-  return false;
-}
-
-bool llvm::CheckBitcodeOutputToConsole(std::ostream* stream_to_check,
-                                       bool print_warning) {
-  if (stream_to_check == cout.stream() &&
-      sys::Process::StandardOutIsDisplayed()) {
-    if (print_warning) {
-      cerr << "WARNING: You're attempting to print out a bitcode file.\n"
-           << "This is inadvisable as it may cause display problems. If\n"
-           << "you REALLY want to taste LLVM bitcode first-hand, you\n"
-           << "can force output with the `-f' option.\n\n";
+      errs() << "WARNING: You're attempting to print out a bitcode file.\n"
+             << "This is inadvisable as it may cause display problems. If\n"
+             << "you REALLY want to taste LLVM bitcode first-hand, you\n"
+             << "can force output with the `-f' option.\n\n";
     }
     return true;
   }
@@ -66,6 +49,16 @@ sys::Path llvm::FindExecutable(const std::string &ExeName,
     Result.appendComponent(ExeName);
     if (Result.canExecute())
       return Result;
+    // If the path is absolute (and it usually is), call FindProgramByName to
+    // allow it to try platform-specific logic, such as appending a .exe suffix
+    // on Windows. Don't do this if we somehow have a relative path, because
+    // we don't want to go searching the PATH and accidentally find an unrelated
+    // version of the program.
+    if (Result.isAbsolute()) {
+      Result = sys::Program::FindProgramByName(Result.str());
+      if (!Result.empty())
+        return Result;
+    }
   }
 
   return sys::Path();

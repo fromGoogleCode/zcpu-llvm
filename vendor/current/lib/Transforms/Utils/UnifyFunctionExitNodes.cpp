@@ -24,8 +24,8 @@
 using namespace llvm;
 
 char UnifyFunctionExitNodes::ID = 0;
-static RegisterPass<UnifyFunctionExitNodes>
-X("mergereturn", "Unify function exit nodes");
+INITIALIZE_PASS(UnifyFunctionExitNodes, "mergereturn",
+                "Unify function exit nodes", false, false);
 
 Pass *llvm::createUnifyFunctionExitNodesPass() {
   return new UnifyFunctionExitNodes();
@@ -35,7 +35,7 @@ void UnifyFunctionExitNodes::getAnalysisUsage(AnalysisUsage &AU) const{
   // We preserve the non-critical-edgeness property
   AU.addPreservedID(BreakCriticalEdgesID);
   // This is a cluster of orthogonal Transforms
-  AU.addPreservedID(PromoteMemoryToRegisterID);
+  AU.addPreserved("mem2reg");
   AU.addPreservedID(LowerSwitchID);
 }
 
@@ -112,7 +112,7 @@ bool UnifyFunctionExitNodes::runOnFunction(Function &F) {
                                                "UnifiedReturnBlock", &F);
 
   PHINode *PN = 0;
-  if (F.getReturnType() == Type::getVoidTy(F.getContext())) {
+  if (F.getReturnType()->isVoidTy()) {
     ReturnInst::Create(F.getContext(), NULL, NewRetBlock);
   } else {
     // If the function doesn't return void... add a PHI node to the block...

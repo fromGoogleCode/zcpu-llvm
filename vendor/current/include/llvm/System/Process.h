@@ -30,7 +30,6 @@ namespace sys {
       /// This static function will return the operating system's virtual memory
       /// page size.
       /// @returns The number of bytes in a virtual memory page.
-      /// @throws nothing
       /// @brief Get the virtual memory page size
       static unsigned GetPageSize();
 
@@ -38,7 +37,6 @@ namespace sys {
       /// by the process. This only counts the memory allocated via the malloc,
       /// calloc and realloc functions and includes any "free" holes in the
       /// allocated space.
-      /// @throws nothing
       /// @brief Return process memory usage.
       static size_t GetMallocUsage();
 
@@ -93,6 +91,11 @@ namespace sys {
       /// "tty" or "console" window. That is, the output would be displayed to
       /// the user rather than being put on a pipe or stored in a file.
       static bool StandardErrIsDisplayed();
+
+      /// This function determines if the given file descriptor is connected to
+      /// a "tty" or "console" window. That is, the output would be displayed to
+      /// the user rather than being put on a pipe or stored in a file.
+      static bool FileDescriptorIsDisplayed(int fd);
 
       /// This function determines the number of columns in the window
       /// if standard output is connected to a "tty" or "console"

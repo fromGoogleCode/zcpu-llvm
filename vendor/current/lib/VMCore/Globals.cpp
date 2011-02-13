@@ -16,7 +16,6 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/GlobalAlias.h"
 #include "llvm/DerivedTypes.h"
-#include "llvm/LLVMContext.h"
 #include "llvm/Module.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -44,13 +43,26 @@ static bool removeDeadUsersOfConstant(const Constant *C) {
   return true;
 }
 
+bool GlobalValue::isMaterializable() const {
+  return getParent() && getParent()->isMaterializable(this);
+}
+bool GlobalValue::isDematerializable() const {
+  return getParent() && getParent()->isDematerializable(this);
+}
+bool GlobalValue::Materialize(std::string *ErrInfo) {
+  return getParent()->Materialize(this, ErrInfo);
+}
+void GlobalValue::Dematerialize() {
+  getParent()->Dematerialize(this);
+}
+
 /// removeDeadConstantUsers - If there are any dead constant users dangling
 /// off of this global value, remove them.  This method is useful for clients
 /// that want to check to see if a global is unused, but don't want to deal
 /// with potentially dead constants hanging off of the globals.
 void GlobalValue::removeDeadConstantUsers() const {
-  Value::use_const_iterator I = use_begin(), E = use_end();
-  Value::use_const_iterator LastNonDeadUser = E;
+  Value::const_use_iterator I = use_begin(), E = use_end();
+  Value::const_use_iterator LastNonDeadUser = E;
   while (I != E) {
     if (const Constant *User = dyn_cast<Constant>(*I)) {
       if (!removeDeadUsersOfConstant(User)) {
@@ -75,6 +87,7 @@ void GlobalValue::removeDeadConstantUsers() const {
   }
 }
 
+
 /// Override destroyConstant to make sure it doesn't get called on
 /// GlobalValue's because they shouldn't be treated like other constants.
 void GlobalValue::destroyConstant() {
@@ -89,13 +102,19 @@ void GlobalValue::copyAttributesFrom(const GlobalValue *Src) {
   setVisibility(Src->getVisibility());
 }
 
-
+void GlobalValue::setAlignment(unsigned Align) {
+  assert((Align & (Align-1)) == 0 && "Alignment is not a power of 2!");
+  assert(Align <= MaximumAlignment &&
+         "Alignment is greater than MaximumAlignment!");
+  Alignment = Log2_32(Align) + 1;
+  assert(getAlignment() == Align && "Alignment representation error!");
+}
+  
 //===----------------------------------------------------------------------===//
 // GlobalVariable Implementation
 //===----------------------------------------------------------------------===//
 
-GlobalVariable::GlobalVariable(LLVMContext &Context, const Type *Ty,
-                               bool constant, LinkageTypes Link,
+GlobalVariable::GlobalVariable(const Type *Ty, bool constant, LinkageTypes Link,
                                Constant *InitVal, const Twine &Name,
                                bool ThreadLocal, unsigned AddressSpace)
   : GlobalValue(PointerType::get(Ty, AddressSpace), 
@@ -170,6 +189,21 @@ void GlobalVariable::replaceUsesOfWithOnConstant(Value *From, Value *To,
 
   // Okay, preconditions out of the way, replace the constant initializer.
   this->setOperand(0, cast<Constant>(To));
+}
+
+void GlobalVariable::setInitializer(Constant *InitVal) {
+  if (InitVal == 0) {
+    if (hasInitializer()) {
+      Op<0>().set(0);
+      NumOperands = 0;
+    }
+  } else {
+    assert(InitVal->getType() == getType()->getElementType() &&
+           "Initializer type must match GlobalVariable type");
+    if (!hasInitializer())
+      NumOperands = 1;
+    Op<0>().set(InitVal);
+  }
 }
 
 /// copyAttributesFrom - copy all additional attributes (those not needed to

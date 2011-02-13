@@ -29,6 +29,7 @@ namespace lltok {
     less, greater,     // <  >
     lparen, rparen,    // (  )
     backslash,         // \    (not /)
+    exclaim,           // !
 
     kw_x,
     kw_begin,   kw_end,
@@ -36,9 +37,10 @@ namespace lltok {
     kw_declare, kw_define,
     kw_global,  kw_constant,
 
-    kw_private, kw_linker_private, kw_internal, kw_linkonce, kw_linkonce_odr,
-    kw_weak, kw_weak_odr, kw_appending, kw_dllimport, kw_dllexport, kw_common,
-    kw_available_externally,
+    kw_private, kw_linker_private, kw_linker_private_weak,
+    kw_linker_private_weak_def_auto, kw_internal,
+    kw_linkonce, kw_linkonce_odr, kw_weak, kw_weak_odr, kw_appending,
+    kw_dllimport, kw_dllexport, kw_common, kw_available_externally,
     kw_default, kw_hidden, kw_protected,
     kw_extern_weak,
     kw_external, kw_thread_local,
@@ -62,12 +64,14 @@ namespace lltok {
     kw_module,
     kw_asm,
     kw_sideeffect,
+    kw_alignstack,
     kw_gc,
     kw_c,
 
     kw_cc, kw_ccc, kw_fastcc, kw_coldcc,
-    kw_x86_stdcallcc, kw_x86_fastcallcc,
+    kw_x86_stdcallcc, kw_x86_fastcallcc, kw_x86_thiscallcc,
     kw_arm_apcscc, kw_arm_aapcscc, kw_arm_aapcs_vfpcc,
+    kw_msp430_intrcc,
 
     kw_signext,
     kw_zeroext,
@@ -82,6 +86,7 @@ namespace lltok {
     kw_readnone,
     kw_readonly,
 
+    kw_inlinehint,
     kw_noinline,
     kw_alwaysinline,
     kw_optsize,
@@ -109,12 +114,13 @@ namespace lltok {
     kw_fptoui, kw_fptosi, kw_inttoptr, kw_ptrtoint, kw_bitcast,
     kw_select, kw_va_arg,
 
-    kw_ret, kw_br, kw_switch, kw_invoke, kw_unwind, kw_unreachable,
+    kw_ret, kw_br, kw_switch, kw_indirectbr, kw_invoke, kw_unwind,
+    kw_unreachable,
 
     kw_malloc, kw_alloca, kw_free, kw_load, kw_store, kw_getelementptr,
 
     kw_extractelement, kw_insertelement, kw_shufflevector, kw_getresult,
-    kw_extractvalue, kw_insertvalue,
+    kw_extractvalue, kw_insertvalue, kw_blockaddress,
 
     // Unsigned Valued tokens (UIntVal).
     GlobalID,          // @42
@@ -124,11 +130,8 @@ namespace lltok {
     LabelStr,          // foo:
     GlobalVar,         // @foo @"foo"
     LocalVar,          // %foo %"foo"
+    MetadataVar,       // !foo
     StringConstant,    // "foo"
-    NamedMD,           // !foo
-
-    // Metadata valued tokens.
-    Metadata,          // !"foo" !{i8 42}
 
     // Type valued tokens (TyVal).
     Type,

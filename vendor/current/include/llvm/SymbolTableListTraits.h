@@ -28,7 +28,8 @@
 #include "llvm/ADT/ilist.h"
 
 namespace llvm {
-
+class ValueSymbolTable;
+  
 template<typename NodeTy> class ilist_iterator;
 template<typename NodeTy, typename Traits> class iplist;
 template<typename Ty> struct ilist_traits;
@@ -46,9 +47,8 @@ public:
   /// of instructions, it returns the BasicBlock that owns them.
   ItemParentClass *getListOwner() {
     typedef iplist<ValueSubClass> ItemParentClass::*Sublist;
-    Sublist Sub(ItemParentClass::
-                getSublistAccess(static_cast<ValueSubClass*>(0)));
-    size_t Offset(size_t(&((ItemParentClass*)0->*Sub)));
+    size_t Offset(size_t(&((ItemParentClass*)0->*ItemParentClass::
+                           getSublistAccess(static_cast<ValueSubClass*>(0)))));
     iplist<ValueSubClass>* Anchor(static_cast<iplist<ValueSubClass>*>(this));
     return reinterpret_cast<ItemParentClass*>(reinterpret_cast<char*>(Anchor)-
                                               Offset);

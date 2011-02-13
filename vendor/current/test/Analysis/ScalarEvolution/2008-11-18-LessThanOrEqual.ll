@@ -1,6 +1,5 @@
-; RUN: llvm-as < %s | opt -analyze -scalar-evolution -disable-output |& \
-; RUN: grep {Loop bb: backedge-taken count is (7 + (-1 \\* %argc))}
-; XFAIL: *
+; RUN: opt < %s -analyze -scalar-evolution |& \
+; RUN: grep {Loop %bb: backedge-taken count is (7 + (-1 \\* %argc))}
 
 define i32 @main(i32 %argc, i8** %argv) nounwind {
 entry:

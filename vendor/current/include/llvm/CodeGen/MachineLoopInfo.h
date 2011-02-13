@@ -38,6 +38,19 @@ namespace llvm {
 class MachineLoop : public LoopBase<MachineBasicBlock, MachineLoop> {
 public:
   MachineLoop();
+
+  /// getTopBlock - Return the "top" block in the loop, which is the first
+  /// block in the linear layout, ignoring any parts of the loop not
+  /// contiguous with the part the contains the header.
+  MachineBasicBlock *getTopBlock();
+
+  /// getBottomBlock - Return the "bottom" block in the loop, which is the last
+  /// block in the linear layout, ignoring any parts of the loop not
+  /// contiguous with the part the contains the header.
+  MachineBasicBlock *getBottomBlock();
+
+  void dump() const;
+
 private:
   friend class LoopInfoBase<MachineBasicBlock, MachineLoop>;
   explicit MachineLoop(MachineBasicBlock *MBB)
@@ -51,12 +64,12 @@ class MachineLoopInfo : public MachineFunctionPass {
   void operator=(const MachineLoopInfo &);  // do not implement
   MachineLoopInfo(const MachineLoopInfo &); // do not implement
 
-  LoopInfoBase<MachineBasicBlock, MachineLoop>& getBase() { return LI; }
-
 public:
   static char ID; // Pass identification, replacement for typeid
 
-  MachineLoopInfo() : MachineFunctionPass(&ID) {}
+  MachineLoopInfo() : MachineFunctionPass(ID) {}
+
+  LoopInfoBase<MachineBasicBlock, MachineLoop>& getBase() { return LI; }
 
   /// iterator/begin/end - The interface to the top-level loops in the current
   /// function.

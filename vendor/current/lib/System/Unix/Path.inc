@@ -16,7 +16,6 @@
 //===          is guaranteed to work on *all* UNIX variants.
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Config/alloca.h"
 #include "Unix.h"
 #if HAVE_SYS_STAT_H
 #include <sys/stat.h>
@@ -57,6 +56,10 @@
 #include <dlfcn.h>
 #endif
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 // Put in a hack for Cygwin which falsely reports that the mkdtemp function
 // is available when it is not.
 #ifdef __CYGWIN__
@@ -73,17 +76,17 @@ inline bool lastIsSlash(const std::string& path) {
 namespace llvm {
 using namespace sys;
 
-extern const char sys::PathSeparator = ':';
+const char sys::PathSeparator = ':';
 
-Path::Path(const std::string& p)
+Path::Path(StringRef p)
   : path(p) {}
 
 Path::Path(const char *StrStart, unsigned StrLen)
   : path(StrStart, StrLen) {}
 
 Path&
-Path::operator=(const std::string &that) {
-  path = that;
+Path::operator=(StringRef that) {
+  path.assign(that.data(), that.size());
   return *this;
 }
 
@@ -119,7 +122,7 @@ void Path::makeAbsolute() {
 
   CWD.appendComponent(path);
 
-  path = CWD.toString();
+  path = CWD.str();
 }
 
 Path
@@ -273,20 +276,20 @@ Path::GetCurrentDirectory() {
   char pathname[MAXPATHLEN];
   if (!getcwd(pathname,MAXPATHLEN)) {
     assert (false && "Could not query current working directory.");
-    return Path("");
+    return Path();
   }
 
   return Path(pathname);
 }
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined (__NetBSD__) || defined(__minix)
 static int
 test_dir(char buf[PATH_MAX], char ret[PATH_MAX],
     const char *dir, const char *bin)
 {
   struct stat sb;
 
-  snprintf(buf, PATH_MAX, "%s//%s", dir, bin);
+  snprintf(buf, PATH_MAX, "%s/%s", dir, bin);
   if (realpath(buf, ret) == NULL)
     return (1);
   if (stat(buf, &sb) != 0)
@@ -331,12 +334,23 @@ getprogpath(char ret[PATH_MAX], const char *bin)
   free(pv);
   return (NULL);
 }
-#endif
+#endif // __FreeBSD__ || __NetBSD__
 
 /// GetMainExecutable - Return the path to the main executable, given the
 /// value of argv[0] from program startup.
 Path Path::GetMainExecutable(const char *argv0, void *MainAddr) {
-#if defined(__FreeBSD__)
+#if defined(__APPLE__)
+  // On OS X the executable path is saved to the stack by dyld. Reading it
+  // from there is much faster than calling dladdr, especially for large
+  // binaries with symbols.
+  char exe_path[MAXPATHLEN];
+  uint32_t size = sizeof(exe_path);
+  if (_NSGetExecutablePath(exe_path, &size) == 0) {
+    char link_path[MAXPATHLEN];
+    if (realpath(exe_path, link_path))
+      return Path(std::string(link_path));
+  }
+#elif defined(__FreeBSD__) || defined (__NetBSD__) || defined(__minix)
   char exe_path[PATH_MAX];
 
   if (getprogpath(exe_path, argv0) != NULL)
@@ -356,17 +370,18 @@ Path Path::GetMainExecutable(const char *argv0, void *MainAddr) {
   // If the filename is a symlink, we need to resolve and return the location of
   // the actual executable.
   char link_path[MAXPATHLEN];
-  return Path(std::string(realpath(DLInfo.dli_fname, link_path)));
+  if (realpath(DLInfo.dli_fname, link_path))
+    return Path(std::string(link_path));
 #endif
   return Path();
 }
 
 
-std::string Path::getDirname() const {
-  return getDirnameCharSep(path, '/');
+StringRef Path::getDirname() const {
+  return getDirnameCharSep(path, "/");
 }
 
-std::string
+StringRef
 Path::getBasename() const {
   // Find the last slash
   std::string::size_type slash = path.rfind('/');
@@ -377,12 +392,12 @@ Path::getBasename() const {
 
   std::string::size_type dot = path.rfind('.');
   if (dot == std::string::npos || dot < slash)
-    return path.substr(slash);
+    return StringRef(path).substr(slash);
   else
-    return path.substr(slash, dot - slash);
+    return StringRef(path).substr(slash, dot - slash);
 }
 
-std::string
+StringRef
 Path::getSuffix() const {
   // Find the last slash
   std::string::size_type slash = path.rfind('/');
@@ -393,24 +408,22 @@ Path::getSuffix() const {
 
   std::string::size_type dot = path.rfind('.');
   if (dot == std::string::npos || dot < slash)
-    return std::string();
+    return StringRef();
   else
-    return path.substr(dot + 1);
+    return StringRef(path).substr(dot + 1);
 }
 
-bool Path::getMagicNumber(std::string& Magic, unsigned len) const {
+bool Path::getMagicNumber(std::string &Magic, unsigned len) const {
   assert(len < 1024 && "Request for magic string too long");
-  char* buf = (char*) alloca(1 + len);
+  char Buf[1025];
   int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0)
     return false;
-  ssize_t bytes_read = ::read(fd, buf, len);
+  ssize_t bytes_read = ::read(fd, Buf, len);
   ::close(fd);
-  if (ssize_t(len) != bytes_read) {
-    Magic.clear();
+  if (ssize_t(len) != bytes_read)
     return false;
-  }
-  Magic.assign(buf,len);
+  Magic.assign(Buf, len);
   return true;
 }
 
@@ -438,6 +451,20 @@ Path::canWrite() const {
 }
 
 bool
+Path::isRegularFile() const {
+  // Get the status so we can determine if it's a file or directory
+  struct stat buf;
+
+  if (0 != stat(path.c_str(), &buf))
+    return false;
+
+  if (S_ISREG(buf.st_mode))
+    return true;
+
+  return false;
+}
+
+bool
 Path::canExecute() const {
   if (0 != access(path.c_str(), R_OK | X_OK ))
     return false;
@@ -449,7 +476,7 @@ Path::canExecute() const {
   return true;
 }
 
-std::string
+StringRef
 Path::getLast() const {
   // Find the last slash
   size_t pos = path.rfind('/');
@@ -463,12 +490,12 @@ Path::getLast() const {
     // Find the second to last slash
     size_t pos2 = path.rfind('/', pos-1);
     if (pos2 == std::string::npos)
-      return path.substr(0,pos);
+      return StringRef(path).substr(0,pos);
     else
-      return path.substr(pos2+1,pos-pos2-1);
+      return StringRef(path).substr(pos2+1,pos-pos2-1);
   }
   // Return everything after the last slash
-  return path.substr(pos+1);
+  return StringRef(path).substr(pos+1);
 }
 
 const FileStatus *
@@ -502,7 +529,7 @@ static bool AddPermissionBits(const Path &File, int bits) {
 
   // Get the file's current mode.
   struct stat buf;
-  if (0 != stat(File.toString().c_str(), &buf))
+  if (0 != stat(File.c_str(), &buf))
     return false;
   // Change the file to have whichever permissions bits from 'bits'
   // that the umask would not disable.
@@ -560,7 +587,7 @@ Path::getDirectoryContents(std::set<Path>& result, std::string* ErrMsg) const {
 }
 
 bool
-Path::set(const std::string& a_path) {
+Path::set(StringRef a_path) {
   if (a_path.empty())
     return false;
   std::string save(path);
@@ -573,7 +600,7 @@ Path::set(const std::string& a_path) {
 }
 
 bool
-Path::appendComponent(const std::string& name) {
+Path::appendComponent(StringRef name) {
   if (name.empty())
     return false;
   std::string save(path);
@@ -605,7 +632,7 @@ Path::eraseComponent() {
 }
 
 bool
-Path::appendSuffix(const std::string& suffix) {
+Path::appendSuffix(StringRef suffix) {
   std::string save(path);
   path.append(".");
   path.append(suffix);
@@ -707,7 +734,7 @@ Path::createTemporaryFileOnDisk(bool reuse_current, std::string* ErrMsg) {
 
 bool
 Path::eraseFromDisk(bool remove_contents, std::string *ErrStr) const {
-  // Get the status so we can determin if its a file or directory
+  // Get the status so we can determine if it's a file or directory.
   struct stat buf;
   if (0 != stat(path.c_str(), &buf)) {
     MakeErrMsg(ErrStr, path + ": can't get status of file");
@@ -759,7 +786,7 @@ bool
 Path::renamePathOnDisk(const Path& newName, std::string* ErrMsg) {
   if (0 != ::rename(path.c_str(), newName.c_str()))
     return MakeErrMsg(ErrMsg, std::string("can't rename '") + path + "' as '" +
-               newName.toString() + "'");
+               newName.str() + "'");
   return false;
 }
 
@@ -781,13 +808,13 @@ sys::CopyFile(const sys::Path &Dest, const sys::Path &Src, std::string* ErrMsg){
   int outFile = -1;
   inFile = ::open(Src.c_str(), O_RDONLY);
   if (inFile == -1)
-    return MakeErrMsg(ErrMsg, Src.toString() +
+    return MakeErrMsg(ErrMsg, Src.str() +
       ": can't open source file to copy");
 
   outFile = ::open(Dest.c_str(), O_WRONLY|O_CREAT, 0666);
   if (outFile == -1) {
     ::close(inFile);
-    return MakeErrMsg(ErrMsg, Dest.toString() +
+    return MakeErrMsg(ErrMsg, Dest.str() +
       ": can't create destination file for copy");
   }
 
@@ -797,7 +824,7 @@ sys::CopyFile(const sys::Path &Dest, const sys::Path &Src, std::string* ErrMsg){
       if (errno != EINTR && errno != EAGAIN) {
         ::close(inFile);
         ::close(outFile);
-        return MakeErrMsg(ErrMsg, Src.toString()+": can't read source file");
+        return MakeErrMsg(ErrMsg, Src.str()+": can't read source file");
       }
     } else {
       char *BufPtr = Buffer;
@@ -807,7 +834,7 @@ sys::CopyFile(const sys::Path &Dest, const sys::Path &Src, std::string* ErrMsg){
           if (errno != EINTR && errno != EAGAIN) {
             ::close(inFile);
             ::close(outFile);
-            return MakeErrMsg(ErrMsg, Dest.toString() +
+            return MakeErrMsg(ErrMsg, Dest.str() +
               ": can't write destination file");
           }
         } else {
@@ -829,7 +856,11 @@ Path::makeUnique(bool reuse_current, std::string* ErrMsg) {
 
   // Append an XXXXXX pattern to the end of the file for use with mkstemp,
   // mktemp or our own implementation.
-  char *FNBuffer = (char*) alloca(path.size()+8);
+  // This uses std::vector instead of SmallVector to avoid a dependence on
+  // libSupport. And performance isn't critical here.
+  std::vector<char> Buf;
+  Buf.resize(path.size()+8);
+  char *FNBuffer = &Buf[0];
     path.copy(FNBuffer,path.size());
   if (isDirectory())
     strcpy(FNBuffer+path.size(), "/XXXXXX");
@@ -857,14 +888,19 @@ Path::makeUnique(bool reuse_current, std::string* ErrMsg) {
 #else
   // Okay, looks like we have to do it all by our lonesome.
   static unsigned FCounter = 0;
-  unsigned offset = path.size() + 1;
-  while ( FCounter < 999999 && exists()) {
-    sprintf(FNBuffer+offset,"%06u",++FCounter);
+  // Try to initialize with unique value.
+  if (FCounter == 0) FCounter = ((unsigned)getpid() & 0xFFFF) << 8;
+  char* pos = strstr(FNBuffer, "XXXXXX");
+  do {
+    if (++FCounter > 0xFFFFFF) {
+      return MakeErrMsg(ErrMsg,
+        path + ": can't make unique filename: too many files");
+    }
+    sprintf(pos, "%06X", FCounter);
     path = FNBuffer;
-  }
-  if (FCounter > 999999)
-    return MakeErrMsg(ErrMsg,
-      path + ": can't make unique filename: too many files");
+  } while (exists());
+  // POSSIBLE SECURITY BUG: An attacker can easily guess the name and exploit
+  // LLVM.
 #endif
   return false;
 }

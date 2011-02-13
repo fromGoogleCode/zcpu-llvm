@@ -1,4 +1,4 @@
-; RUN: llvm-as < %s | llc
+; RUN: llc < %s
 ; PR2988
 target datalayout = "E-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f32:32:32-f64:32:64-v64:64:64-v128:128:128-a0:0:64-f128:64:128"
 target triple = "powerpc-apple-darwin10.0"
@@ -35,3 +35,10 @@ declare ppc_fp128 @"\01_sinl$LDBL128"(ppc_fp128) nounwind readonly
 declare ppc_fp128 @"\01_cosl$LDBL128"(ppc_fp128) nounwind readonly
 
 declare ppc_fp128 @llvm.pow.ppcf128(ppc_fp128, ppc_fp128) nounwind readonly
+
+declare ppc_fp128 @copysignl(ppc_fp128, ppc_fp128)
+
+define ppc_fp128 @cs(ppc_fp128 %from, ppc_fp128 %to) {
+  %tmp = call ppc_fp128 @copysignl(ppc_fp128 %from, ppc_fp128 %to)
+  ret ppc_fp128 %tmp
+}

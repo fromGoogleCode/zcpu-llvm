@@ -23,34 +23,32 @@ namespace llvm {
 
 class ARMBaseTargetMachine;
 class FunctionPass;
-class MachineCodeEmitter;
 class JITCodeEmitter;
-class ObjectCodeEmitter;
 class formatted_raw_ostream;
 
 // Enums corresponding to ARM condition codes
 namespace ARMCC {
   // The CondCodes constants map directly to the 4-bit encoding of the
   // condition field for predicated instructions.
-  enum CondCodes {
-    EQ,
-    NE,
-    HS,
-    LO,
-    MI,
-    PL,
-    VS,
-    VC,
-    HI,
-    LS,
-    GE,
-    LT,
-    GT,
-    LE,
-    AL
+  enum CondCodes { // Meaning (integer)          Meaning (floating-point)
+    EQ,            // Equal                      Equal
+    NE,            // Not equal                  Not equal, or unordered
+    HS,            // Carry set                  >, ==, or unordered
+    LO,            // Carry clear                Less than
+    MI,            // Minus, negative            Less than
+    PL,            // Plus, positive or zero     >, ==, or unordered
+    VS,            // Overflow                   Unordered
+    VC,            // No overflow                Not unordered
+    HI,            // Unsigned higher            Greater than, or unordered
+    LS,            // Unsigned lower or same     Less than or equal
+    GE,            // Greater than or equal      Greater than or equal
+    LT,            // Less than                  Less than, or unordered
+    GT,            // Greater than               Greater than
+    LE,            // Less than or equal         <, ==, or unordered
+    AL             // Always (unconditional)     Always (unconditional)
   };
 
-  inline static CondCodes getOppositeCondition(CondCodes CC){
+  inline static CondCodes getOppositeCondition(CondCodes CC) {
     switch (CC) {
     default: llvm_unreachable("Unknown condition code");
     case EQ: return NE;
@@ -69,7 +67,7 @@ namespace ARMCC {
     case LE: return GT;
     }
   }
-}
+} // namespace ARMCC
 
 inline static const char *ARMCondCodeToString(ARMCC::CondCodes CC) {
   switch (CC) {
@@ -92,18 +90,45 @@ inline static const char *ARMCondCodeToString(ARMCC::CondCodes CC) {
   }
 }
 
-FunctionPass *createARMISelDag(ARMBaseTargetMachine &TM);
+namespace ARM_MB {
+  // The Memory Barrier Option constants map directly to the 4-bit encoding of
+  // the option field for memory barrier operations.
+  enum MemBOpt {
+    ST    = 14,
+    ISH   = 11,
+    ISHST = 10,
+    NSH   = 7,
+    NSHST = 6,
+    OSH   = 3,
+    OSHST = 2
+  };
 
-FunctionPass *createARMCodeEmitterPass(ARMBaseTargetMachine &TM,
-                                       MachineCodeEmitter &MCE);
+  inline static const char *MemBOptToString(unsigned val) {
+    switch (val) {
+    default: llvm_unreachable("Unknown memory opetion");
+    case ST:    return "st";
+    case ISH:   return "ish";
+    case ISHST: return "ishst";
+    case NSH:   return "nsh";
+    case NSHST: return "nshst";
+    case OSH:   return "osh";
+    case OSHST: return "oshst";
+    }
+  }
+} // namespace ARM_MB
+
+FunctionPass *createARMISelDag(ARMBaseTargetMachine &TM,
+                               CodeGenOpt::Level OptLevel);
+
 FunctionPass *createARMJITCodeEmitterPass(ARMBaseTargetMachine &TM,
                                           JITCodeEmitter &JCE);
-FunctionPass *createARMObjectCodeEmitterPass(ARMBaseTargetMachine &TM,
-                                             ObjectCodeEmitter &OCE);
 
 FunctionPass *createARMLoadStoreOptimizationPass(bool PreAlloc = false);
+FunctionPass *createARMExpandPseudoPass();
+FunctionPass *createARMGlobalMergePass(const TargetLowering* tli);
 FunctionPass *createARMConstantIslandPass();
 FunctionPass *createNEONPreAllocPass();
+FunctionPass *createNEONMoveFixPass();
 FunctionPass *createThumb2ITBlockPass();
 FunctionPass *createThumb2SizeReductionPass();
 

@@ -17,20 +17,23 @@
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/Support/Debug.h"
 using namespace llvm;
 
+namespace llvm {
 #define MLB class LoopBase<MachineBasicBlock, MachineLoop>
 TEMPLATE_INSTANTIATION(MLB);
 #undef MLB
 #define MLIB class LoopInfoBase<MachineBasicBlock, MachineLoop>
 TEMPLATE_INSTANTIATION(MLIB);
 #undef MLIB
+}
 
 char MachineLoopInfo::ID = 0;
-static RegisterPass<MachineLoopInfo>
-X("machine-loops", "Machine Natural Loop Construction", true);
+INITIALIZE_PASS(MachineLoopInfo, "machine-loops",
+                "Machine Natural Loop Construction", true, true);
 
-const PassInfo *const llvm::MachineLoopInfoID = &X;
+char &llvm::MachineLoopInfoID = MachineLoopInfo::ID;
 
 bool MachineLoopInfo::runOnMachineFunction(MachineFunction &) {
   releaseMemory();
@@ -42,4 +45,36 @@ void MachineLoopInfo::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   AU.addRequired<MachineDominatorTree>();
   MachineFunctionPass::getAnalysisUsage(AU);
+}
+
+MachineBasicBlock *MachineLoop::getTopBlock() {
+  MachineBasicBlock *TopMBB = getHeader();
+  MachineFunction::iterator Begin = TopMBB->getParent()->begin();
+  if (TopMBB != Begin) {
+    MachineBasicBlock *PriorMBB = prior(MachineFunction::iterator(TopMBB));
+    while (contains(PriorMBB)) {
+      TopMBB = PriorMBB;
+      if (TopMBB == Begin) break;
+      PriorMBB = prior(MachineFunction::iterator(TopMBB));
+    }
+  }
+  return TopMBB;
+}
+
+MachineBasicBlock *MachineLoop::getBottomBlock() {
+  MachineBasicBlock *BotMBB = getHeader();
+  MachineFunction::iterator End = BotMBB->getParent()->end();
+  if (BotMBB != prior(End)) {
+    MachineBasicBlock *NextMBB = llvm::next(MachineFunction::iterator(BotMBB));
+    while (contains(NextMBB)) {
+      BotMBB = NextMBB;
+      if (BotMBB == llvm::next(MachineFunction::iterator(BotMBB))) break;
+      NextMBB = llvm::next(MachineFunction::iterator(BotMBB));
+    }
+  }
+  return BotMBB;
+}
+
+void MachineLoop::dump() const {
+  print(dbgs());
 }

@@ -3,32 +3,35 @@
 ** Created by Kevin from config.h.in **
 ***************************************/
 
+#ifndef CONFIG_H
+#define CONFIG_H
+
 /* Define if dlopen(0) will open the symbols of the program */
 #undef CAN_DLOPEN_SELF
 
-/* Define to one of `_getb67', `GETB67', `getb67' for Cray-2 and Cray-YMP
-   systems. This function is required for `alloca.c' support on those systems.
-   */
-#undef CRAY_STACKSEG_END
-
-/* Define to 1 if using `alloca.c'. */
-#undef C_ALLOCA
-
 /* Define if CBE is enabled for printf %a output */
 #undef ENABLE_CBE_PRINTF_A
+
+/* Directories clang will search for headers */
+#define C_INCLUDE_DIRS "${C_INCLUDE_DIRS}"
+
+/* Directory clang will search for libstdc++ headers */
+#define CXX_INCLUDE_ROOT "${CXX_INCLUDE_ROOT}"
+
+/* Architecture of libstdc++ headers */
+#define CXX_INCLUDE_ARCH "${CXX_INCLUDE_ARCH}"
+
+/* 32 bit multilib directory */
+#define CXX_INCLUDE_32BIT_DIR "${CXX_INCLUDE_32BIT_DIR}"
+
+/* 64 bit multilib directory */
+#define CXX_INCLUDE_64BIT_DIR "${CXX_INCLUDE_64BIT_DIR}"
 
 /* Define if position independent code is enabled */
 #cmakedefine ENABLE_PIC ${ENABLE_PIC}
 
 /* Define if threads enabled */
 #cmakedefine ENABLE_THREADS ${ENABLE_THREADS}
-
-/* Define to 1 if you have `alloca', as a function or macro. */
-#cmakedefine HAVE_ALLOCA ${HAVE_ALLOCA}
-
-/* Define to 1 if you have <alloca.h> and it should be used (not on Ultrix).
-   */
-#cmakedefine HAVE_ALLOCA_H ${HAVE_ALLOCA_H}
 
 /* Define to 1 if you have the `argz_append' function. */
 #undef HAVE_ARGZ_APPEND
@@ -63,6 +66,9 @@
 /* Define to 1 if you have the `ceilf' function. */
 #cmakedefine HAVE_CEILF ${HAVE_CEILF}
 
+/* Define if the neat program is available */
+#cmakedefine HAVE_CIRCO ${HAVE_CIRCO}
+
 /* Define to 1 if you have the `closedir' function. */
 #undef HAVE_CLOSEDIR
 
@@ -92,10 +98,10 @@
 #cmakedefine HAVE_DL_H ${HAVE_DL_H}
 
 /* Define if the dot program is available */
-#undef HAVE_DOT
+#cmakedefine HAVE_DOT ${HAVE_DOT}
 
 /* Define if the dotty program is available */
-#undef HAVE_DOTTY
+#cmakedefine HAVE_DOTTY ${HAVE_DOTTY}
 
 /* Define if you have the _dyld_func_lookup function. */
 #undef HAVE_DYLD
@@ -112,8 +118,11 @@
 /* Define to 1 if you have the <fcntl.h> header file. */
 #cmakedefine HAVE_FCNTL_H ${HAVE_FCNTL_H}
 
+/* Define if the neat program is available */
+#cmakedefine HAVE_FDP ${HAVE_FDP}
+
 /* Set to 1 if the finite function is found in <ieeefp.h> */
-#undef HAVE_FINITE_IN_IEEEFP_H
+#cmakedefine HAVE_FINITE_IN_IEEEFP_H ${HAVE_FINITE_IN_IEEEFP_H}
 
 /* Define to 1 if you have the `floorf' function. */
 #cmakedefine HAVE_FLOORF ${HAVE_FLOORF}
@@ -152,7 +161,7 @@
 #undef HAVE_GRAPHVIZ
 
 /* Define if the gv program is available */
-#undef HAVE_GV
+#cmakedefine HAVE_GV ${HAVE_GV}
 
 /* Define to 1 if you have the `index' function. */
 #undef HAVE_INDEX
@@ -262,7 +271,10 @@
 #cmakedefine HAVE_NDIR_H ${HAVE_NDIR_H}
 
 /* Define to 1 if you have the `nearbyintf' function. */
-#undef HAVE_NEARBYINTF
+#cmakedefine HAVE_NEARBYINTF ${HAVE_NEARBYINTF}
+
+/* Define if the neat program is available */
+#cmakedefine HAVE_NEATO ${HAVE_NEATO}
 
 /* Define to 1 if you have the `opendir' function. */
 #undef HAVE_OPENDIR
@@ -303,8 +315,14 @@
 /* Define to 1 if you have the `roundf' function. */
 #undef HAVE_ROUNDF
 
+/* Define to 1 if you have the `round' function. */
+#cmakedefine HAVE_ROUND ${HAVE_ROUND}
+
 /* Define to 1 if you have the `sbrk' function. */
-#undef HAVE_SBRK
+#cmakedefine HAVE_SBRK ${HAVE_SBRK}
+
+/* Define to 1 if you have the `setenv' function. */
+#cmakedefine HAVE_SETENV ${HAVE_SETENV}
 
 /* Define to 1 if you have the `setjmp' function. */
 #undef HAVE_SETJMP
@@ -422,6 +440,9 @@
 /* Define to 1 if you have <sys/wait.h> that is POSIX.1 compatible. */
 #cmakedefine HAVE_SYS_WAIT_H ${HAVE_SYS_WAIT_H}
 
+/* Define if the neat program is available */
+#cmakedefine HAVE_TWOPI ${HAVE_TWOPI}
+
 /* Define to 1 if the system has the type `uint64_t'. */
 #undef HAVE_UINT64_T
 
@@ -437,11 +458,11 @@
 /* Define to 1 if the system has the type `u_int64_t'. */
 #undef HAVE_U_INT64_T
 
+/* Define to 1 if you have the <valgrind/valgrind.h> header file. */
+#cmakedefine HAVE_VALGRIND_VALGRIND_H ${HAVE_VALGRIND_VALGRIND_H}
+
 /* Define to 1 if you have the <windows.h> header file. */
 #cmakedefine HAVE_WINDOWS_H ${HAVE_WINDOWS_H}
-
-/* Define to 1 for ilist sentinel compaction */
-#cmakedefine LLVM_COMPACT_SENTINELS ${LLVM_COMPACT_SENTINELS}
 
 /* Installation directory for binary executables */
 #undef LLVM_BINDIR
@@ -482,20 +503,32 @@
 /* Added by Kevin -- Maximum path length */
 #cmakedefine MAXPATHLEN ${MAXPATHLEN}
 
+/* Define to path to circo program if found or 'echo circo' otherwise */
+#cmakedefine LLVM_PATH_CIRCO "${LLVM_PATH_CIRCO}"
+
 /* Define to path to dot program if found or 'echo dot' otherwise */
-#undef LLVM_PATH_DOT
+#cmakedefine LLVM_PATH_DOT "${LLVM_PATH_DOT}"
 
 /* Define to path to dotty program if found or 'echo dotty' otherwise */
-#undef LLVM_PATH_DOTTY
+#cmakedefine LLVM_PATH_DOTTY "${LLVM_PATH_DOTTY}"
+
+/* Define to path to fdp program if found or 'echo fdp' otherwise */
+#cmakedefine LLVM_PATH_FDP "${LLVM_PATH_FDP}"
 
 /* Define to path to Graphviz program if found or 'echo Graphviz' otherwise */
 #undef LLVM_PATH_GRAPHVIZ
 
 /* Define to path to gv program if found or 'echo gv' otherwise */
-#undef LLVM_PATH_GV
+#cmakedefine LLVM_PATH_GV "${LLVM_PATH_GV}"
+
+/* Define to path to neato program if found or 'echo neato' otherwise */
+#cmakedefine LLVM_PATH_NEATO "${LLVM_PATH_NEATO}"
+
+/* Define to path to twopi program if found or 'echo twopi' otherwise */
+#cmakedefine LLVM_PATH_TWOPI "${LLVM_PATH_TWOPI}"
 
 /* Installation prefix directory */
-#undef LLVM_PREFIX
+#cmakedefine LLVM_PREFIX "${LLVM_PREFIX}"
 
 /* Define if the OS needs help to load dependent libraries for dlopen(). */
 #cmakedefine LTDL_DLOPEN_DEPLIBS ${LTDL_DLOPEN_DEPLIBS}
@@ -593,5 +626,16 @@
 /* Define to a function implementing strdup */
 #cmakedefine strdup ${strdup}
 
-/* Native LLVM architecture */
-#cmakedefine LLVM_NATIVE_ARCH ${LLVM_NATIVE_ARCH}Target
+/* LLVM architecture name for the native architecture, if available */
+#cmakedefine LLVM_NATIVE_ARCH ${LLVM_NATIVE_ARCH}
+  
+/* LLVM name for the native Target init function, if available */
+#cmakedefine LLVM_NATIVE_TARGET LLVMInitialize${LLVM_NATIVE_ARCH}Target
+ 
+/* LLVM name for the native TargetInfo init function, if available */
+#cmakedefine LLVM_NATIVE_TARGETINFO LLVMInitialize${LLVM_NATIVE_ARCH}TargetInfo
+ 
+/* LLVM name for the native AsmPrinter init function, if available */
+#cmakedefine LLVM_NATIVE_ASMPRINTER LLVMInitialize${LLVM_NATIVE_ARCH}AsmPrinter
+
+#endif

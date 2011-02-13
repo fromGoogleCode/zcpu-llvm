@@ -1,4 +1,5 @@
-; RUN: llvm-as < %s | llc -fast-isel -fast-isel-abort -march=x86 -mattr=sse2
+; RUN: llc < %s -fast-isel -fast-isel-abort -march=x86 -mattr=sse2
+; RUN: llc < %s -fast-isel -fast-isel-abort -march=x86-64
 
 ; This tests very minimal fast-isel functionality.
 
@@ -14,7 +15,7 @@ fast:
   %t1 = mul i32 %t0, %s
   %t2 = sub i32 %t1, %s
   %t3 = and i32 %t2, %s
-  %t4 = or i32 %t3, %s
+  %t4 = xor i32 %t3, 3
   %t5 = xor i32 %t4, %s
   %t6 = add i32 %t5, 2
   %t7 = getelementptr i32* %y, i32 1
@@ -48,9 +49,10 @@ entry:
 	ret i32 %tmp2
 }
 
-define i1 @ptrtoint_i1(i8* %p) nounwind {
+define void @ptrtoint_i1(i8* %p, i1* %q) nounwind {
   %t = ptrtoint i8* %p to i1
-  ret i1 %t
+  store i1 %t, i1* %q
+  ret void
 }
 define i8* @inttoptr_i1(i1 %p) nounwind {
   %t = inttoptr i1 %p to i8*
@@ -63,4 +65,30 @@ define i32 @ptrtoint_i32(i8* %p) nounwind {
 define i8* @inttoptr_i32(i32 %p) nounwind {
   %t = inttoptr i32 %p to i8*
   ret i8* %t
+}
+
+define i8 @trunc_i32_i8(i32 %x) signext nounwind  {
+	%tmp1 = trunc i32 %x to i8
+	ret i8 %tmp1
+}
+
+define i8 @trunc_i16_i8(i16 signext %x) signext nounwind  {
+	%tmp1 = trunc i16 %x to i8
+	ret i8 %tmp1
+}
+
+define i8 @shl_i8(i8 %a, i8 %c) nounwind {
+       %tmp = shl i8 %a, %c
+       ret i8 %tmp
+}
+
+define i8 @mul_i8(i8 %a) nounwind {
+       %tmp = mul i8 %a, 17
+       ret i8 %tmp
+}
+
+define void @load_store_i1(i1* %p, i1* %q) nounwind {
+  %t = load i1* %p
+  store i1 %t, i1* %q
+  ret void
 }

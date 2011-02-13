@@ -15,7 +15,6 @@
 #define LLVM_TARGET_ARM_ARMADDRESSINGMODES_H
 
 #include "llvm/CodeGen/SelectionDAGNodes.h"
-#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <cassert>
 
@@ -36,9 +35,13 @@ namespace ARM_AM {
     add = '+', sub = '-'
   };
 
+  static inline const char *getAddrOpcStr(AddrOpc Op) {
+    return Op == sub ? "-" : "";
+  }
+
   static inline const char *getShiftOpcStr(ShiftOpc Op) {
     switch (Op) {
-    default: llvm_unreachable("Unknown shift opc!");
+    default: assert(0 && "Unknown shift opc!");
     case ARM_AM::asr: return "asr";
     case ARM_AM::lsl: return "lsl";
     case ARM_AM::lsr: return "lsr";
@@ -71,21 +74,11 @@ namespace ARM_AM {
 
   static inline const char *getAMSubModeStr(AMSubMode Mode) {
     switch (Mode) {
-    default: llvm_unreachable("Unknown addressing sub-mode!");
+    default: assert(0 && "Unknown addressing sub-mode!");
     case ARM_AM::ia: return "ia";
     case ARM_AM::ib: return "ib";
     case ARM_AM::da: return "da";
     case ARM_AM::db: return "db";
-    }
-  }
-
-  static inline const char *getAMSubModeAltStr(AMSubMode Mode, bool isLD) {
-    switch (Mode) {
-    default: llvm_unreachable("Unknown addressing sub-mode!");
-    case ARM_AM::ia: return isLD ? "fd" : "ea";
-    case ARM_AM::ib: return isLD ? "ed" : "fa";
-    case ARM_AM::da: return isLD ? "fa" : "ed";
-    case ARM_AM::db: return isLD ? "ea" : "fd";
     }
   }
 
@@ -158,22 +151,13 @@ namespace ARM_AM {
     if ((rotr32(Imm, RotAmt) & ~255U) == 0)
       return (32-RotAmt)&31;  // HW rotates right, not left.
 
-    // For values like 0xF000000F, we should skip the first run of ones, then
+    // For values like 0xF000000F, we should ignore the low 6 bits, then
     // retry the hunt.
-    if (Imm & 1) {
-      unsigned TrailingOnes = CountTrailingZeros_32(~Imm);
-      if (TrailingOnes != 32) {  // Avoid overflow on 0xFFFFFFFF
-        // Restart the search for a high-order bit after the initial seconds of
-        // ones.
-        unsigned TZ2 = CountTrailingZeros_32(Imm & ~((1 << TrailingOnes)-1));
-
-        // Rotate amount must be even.
-        unsigned RotAmt2 = TZ2 & ~1;
-
-        // If this fits, use it.
-        if (RotAmt2 != 32 && (rotr32(Imm, RotAmt2) & ~255U) == 0)
-          return (32-RotAmt2)&31;  // HW rotates right, not left.
-      }
+    if (Imm & 63U) {
+      unsigned TZ2 = CountTrailingZeros_32(Imm & ~63U);
+      unsigned RotAmt2 = TZ2 & ~1;
+      if ((rotr32(Imm, RotAmt2) & ~255U) == 0)
+        return (32-RotAmt2)&31;  // HW rotates right, not left.
     }
 
     // Otherwise, we have no way to cover this span of bits with a single
@@ -342,6 +326,66 @@ namespace ARM_AM {
     return -1;
   }
 
+  static inline unsigned getT2SOImmValRotate(unsigned V) {
+    if ((V & ~255U) == 0) return 0;
+    // Use CTZ to compute the rotate amount.
+    unsigned RotAmt = CountTrailingZeros_32(V);
+    return (32 - RotAmt) & 31;
+  }
+
+  static inline bool isT2SOImmTwoPartVal (unsigned Imm) {
+    unsigned V = Imm;
+    // Passing values can be any combination of splat values and shifter
+    // values. If this can be handled with a single shifter or splat, bail
+    // out. Those should be handled directly, not with a two-part val.
+    if (getT2SOImmValSplatVal(V) != -1)
+      return false;
+    V = rotr32 (~255U, getT2SOImmValRotate(V)) & V;
+    if (V == 0)
+      return false;
+
+    // If this can be handled as an immediate, accept.
+    if (getT2SOImmVal(V) != -1) return true;
+
+    // Likewise, try masking out a splat value first.
+    V = Imm;
+    if (getT2SOImmValSplatVal(V & 0xff00ff00U) != -1)
+      V &= ~0xff00ff00U;
+    else if (getT2SOImmValSplatVal(V & 0x00ff00ffU) != -1)
+      V &= ~0x00ff00ffU;
+    // If what's left can be handled as an immediate, accept.
+    if (getT2SOImmVal(V) != -1) return true;
+
+    // Otherwise, do not accept.
+    return false;
+  }
+
+  static inline unsigned getT2SOImmTwoPartFirst(unsigned Imm) {
+    assert (isT2SOImmTwoPartVal(Imm) &&
+            "Immedate cannot be encoded as two part immediate!");
+    // Try a shifter operand as one part
+    unsigned V = rotr32 (~255, getT2SOImmValRotate(Imm)) & Imm;
+    // If the rest is encodable as an immediate, then return it.
+    if (getT2SOImmVal(V) != -1) return V;
+
+    // Try masking out a splat value first.
+    if (getT2SOImmValSplatVal(Imm & 0xff00ff00U) != -1)
+      return Imm & 0xff00ff00U;
+
+    // The other splat is all that's left as an option.
+    assert (getT2SOImmValSplatVal(Imm & 0x00ff00ffU) != -1);
+    return Imm & 0x00ff00ffU;
+  }
+
+  static inline unsigned getT2SOImmTwoPartSecond(unsigned Imm) {
+    // Mask out the first hunk
+    Imm ^= getT2SOImmTwoPartFirst(Imm);
+    // Return what's left
+    assert (getT2SOImmVal(Imm) != -1 &&
+            "Unable to encode second part of T2 two part SO immediate");
+    return Imm;
+  }
+
 
   //===--------------------------------------------------------------------===//
   // Addressing Mode #2
@@ -414,20 +458,14 @@ namespace ARM_AM {
   //    IB - Increment before
   //    DA - Decrement after
   //    DB - Decrement before
-  //
-  // If the 4th bit (writeback)is set, then the base register is updated after
-  // the memory transfer.
+  // For VFP instructions, only the IA and DB modes are valid.
 
   static inline AMSubMode getAM4SubMode(unsigned Mode) {
     return (AMSubMode)(Mode & 0x7);
   }
 
-  static inline unsigned getAM4ModeImm(AMSubMode SubMode, bool WB = false) {
-    return (int)SubMode | ((int)WB << 3);
-  }
-
-  static inline bool getAM4WBFlag(unsigned Mode) {
-    return (Mode >> 3) & 1;
+  static inline unsigned getAM4ModeImm(AMSubMode SubMode) {
+    return (int)SubMode;
   }
 
   //===--------------------------------------------------------------------===//
@@ -440,14 +478,6 @@ namespace ARM_AM {
   //
   // The first operand is always a Reg.  The second operand encodes the
   // operation in bit 8 and the immediate in bits 0-7.
-  //
-  // This is also used for FP load/store multiple ops. The second operand
-  // encodes the writeback mode in bit 8 and the number of registers (or 2
-  // times the number of registers for DPR ops) in bits 0-7. In addition,
-  // bits 9-11 encode one of the following two sub-modes:
-  //
-  //    IA - Increment after
-  //    DB - Decrement before
 
   /// getAM5Opc - This function encodes the addrmode5 opc field.
   static inline unsigned getAM5Opc(AddrOpc Opc, unsigned char Offset) {
@@ -461,41 +491,79 @@ namespace ARM_AM {
     return ((AM5Opc >> 8) & 1) ? sub : add;
   }
 
-  /// getAM5Opc - This function encodes the addrmode5 opc field for FLDM and
-  /// FSTM instructions.
-  static inline unsigned getAM5Opc(AMSubMode SubMode, bool WB,
-                                   unsigned char Offset) {
-    assert((SubMode == ia || SubMode == db) &&
-           "Illegal addressing mode 5 sub-mode!");
-    return ((int)SubMode << 9) | ((int)WB << 8) | Offset;
-  }
-  static inline AMSubMode getAM5SubMode(unsigned AM5Opc) {
-    return (AMSubMode)((AM5Opc >> 9) & 0x7);
-  }
-  static inline bool getAM5WBFlag(unsigned AM5Opc) {
-    return ((AM5Opc >> 8) & 1);
-  }
-
   //===--------------------------------------------------------------------===//
   // Addressing Mode #6
   //===--------------------------------------------------------------------===//
   //
   // This is used for NEON load / store instructions.
   //
-  // addrmode6 := reg with optional writeback
+  // addrmode6 := reg with optional alignment
   //
-  // This is stored in three operands [regaddr, regupdate, opc].  The first is
-  // the address register.  The second register holds the value of a post-access
-  // increment for writeback or reg0 if no writeback or if the writeback
-  // increment is the size of the memory access.  The third operand encodes
-  // whether there is writeback to the address register.
+  // This is stored in two operands [regaddr, align].  The first is the
+  // address register.  The second operand is the value of the alignment
+  // specifier in bytes or zero if no explicit alignment.
+  // Valid alignments depend on the specific instruction.
 
-  static inline unsigned getAM6Opc(bool WB = false) {
-    return (int)WB;
+  //===--------------------------------------------------------------------===//
+  // NEON Modified Immediates
+  //===--------------------------------------------------------------------===//
+  //
+  // Several NEON instructions (e.g., VMOV) take a "modified immediate"
+  // vector operand, where a small immediate encoded in the instruction
+  // specifies a full NEON vector value.  These modified immediates are
+  // represented here as encoded integers.  The low 8 bits hold the immediate
+  // value; bit 12 holds the "Op" field of the instruction, and bits 11-8 hold
+  // the "Cmode" field of the instruction.  The interfaces below treat the
+  // Op and Cmode values as a single 5-bit value.
+
+  static inline unsigned createNEONModImm(unsigned OpCmode, unsigned Val) {
+    return (OpCmode << 8) | Val;
+  }
+  static inline unsigned getNEONModImmOpCmode(unsigned ModImm) {
+    return (ModImm >> 8) & 0x1f;
+  }
+  static inline unsigned getNEONModImmVal(unsigned ModImm) {
+    return ModImm & 0xff;
   }
 
-  static inline bool getAM6WBFlag(unsigned Mode) {
-    return Mode & 1;
+  /// decodeNEONModImm - Decode a NEON modified immediate value into the
+  /// element value and the element size in bits.  (If the element size is
+  /// smaller than the vector, it is splatted into all the elements.)
+  static inline uint64_t decodeNEONModImm(unsigned ModImm, unsigned &EltBits) {
+    unsigned OpCmode = getNEONModImmOpCmode(ModImm);
+    unsigned Imm8 = getNEONModImmVal(ModImm);
+    uint64_t Val = 0;
+
+    if (OpCmode == 0xe) {
+      // 8-bit vector elements
+      Val = Imm8;
+      EltBits = 8;
+    } else if ((OpCmode & 0xc) == 0x8) {
+      // 16-bit vector elements
+      unsigned ByteNum = (OpCmode & 0x6) >> 1;
+      Val = Imm8 << (8 * ByteNum);
+      EltBits = 16;
+    } else if ((OpCmode & 0x8) == 0) {
+      // 32-bit vector elements, zero with one byte set
+      unsigned ByteNum = (OpCmode & 0x6) >> 1;
+      Val = Imm8 << (8 * ByteNum);
+      EltBits = 32;
+    } else if ((OpCmode & 0xe) == 0xc) {
+      // 32-bit vector elements, one byte with low bits set
+      unsigned ByteNum = 1 + (OpCmode & 0x1);
+      Val = (Imm8 << (8 * ByteNum)) | (0xffff >> (8 * (2 - ByteNum)));
+      EltBits = 32;
+    } else if (OpCmode == 0x1e) {
+      // 64-bit vector elements
+      for (unsigned ByteNum = 0; ByteNum < 8; ++ByteNum) {
+        if ((ModImm >> ByteNum) & 1)
+          Val |= (uint64_t)0xff << (8 * ByteNum);
+      }
+      EltBits = 64;
+    } else {
+      assert(false && "Unsupported NEON immediate");
+    }
+    return Val;
   }
 
 } // end namespace ARM_AM

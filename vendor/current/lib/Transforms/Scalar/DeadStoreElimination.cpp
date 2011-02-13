@@ -26,36 +26,42 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/Support/Compiler.h"
-#include "llvm/Support/ValueHandle.h"
 using namespace llvm;
 
 STATISTIC(NumFastStores, "Number of stores deleted");
 STATISTIC(NumFastOther , "Number of other instrs removed");
 
 namespace {
-  struct VISIBILITY_HIDDEN DSE : public FunctionPass {
+  struct DSE : public FunctionPass {
     TargetData *TD;
 
     static char ID; // Pass identification, replacement for typeid
-    DSE() : FunctionPass(&ID) {}
+    DSE() : FunctionPass(ID) {}
 
     virtual bool runOnFunction(Function &F) {
       bool Changed = false;
+      
+      DominatorTree &DT = getAnalysis<DominatorTree>();
+      
       for (Function::iterator I = F.begin(), E = F.end(); I != E; ++I)
-        Changed |= runOnBasicBlock(*I);
+        // Only check non-dead blocks.  Dead blocks may have strange pointer
+        // cycles that will confuse alias analysis.
+        if (DT.isReachableFromEntry(I))
+          Changed |= runOnBasicBlock(*I);
       return Changed;
     }
     
     bool runOnBasicBlock(BasicBlock &BB);
-    bool handleFreeWithNonTrivialDependency(FreeInst *F, MemDepResult Dep);
+    bool handleFreeWithNonTrivialDependency(const CallInst *F,
+                                            MemDepResult Dep);
     bool handleEndBlock(BasicBlock &BB);
-    bool RemoveUndeadPointers(Value* Ptr, uint64_t killPointerSize,
-                              BasicBlock::iterator& BBI,
-                              SmallPtrSet<Value*, 64>& deadPointers);
+    bool RemoveUndeadPointers(Value *Ptr, uint64_t killPointerSize,
+                              BasicBlock::iterator &BBI,
+                              SmallPtrSet<Value*, 64> &deadPointers);
     void DeleteDeadInstruction(Instruction *I,
                                SmallPtrSet<Value*, 64> *deadPointers = 0);
     
@@ -68,19 +74,116 @@ namespace {
       AU.addRequired<AliasAnalysis>();
       AU.addRequired<MemoryDependenceAnalysis>();
       AU.addPreserved<DominatorTree>();
-      AU.addPreserved<AliasAnalysis>();
       AU.addPreserved<MemoryDependenceAnalysis>();
     }
+
+    unsigned getPointerSize(Value *V) const;
   };
 }
 
 char DSE::ID = 0;
-static RegisterPass<DSE> X("dse", "Dead Store Elimination");
+INITIALIZE_PASS(DSE, "dse", "Dead Store Elimination", false, false);
 
 FunctionPass *llvm::createDeadStoreEliminationPass() { return new DSE(); }
 
+/// doesClobberMemory - Does this instruction clobber (write without reading)
+/// some memory?
+static bool doesClobberMemory(Instruction *I) {
+  if (isa<StoreInst>(I))
+    return true;
+  if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) {
+    switch (II->getIntrinsicID()) {
+    default:
+      return false;
+    case Intrinsic::memset:
+    case Intrinsic::memmove:
+    case Intrinsic::memcpy:
+    case Intrinsic::init_trampoline:
+    case Intrinsic::lifetime_end:
+      return true;
+    }
+  }
+  return false;
+}
+
+/// isElidable - If the value of this instruction and the memory it writes to is
+/// unused, may we delete this instrtction?
+static bool isElidable(Instruction *I) {
+  assert(doesClobberMemory(I));
+  if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(I))
+    return II->getIntrinsicID() != Intrinsic::lifetime_end;
+  if (StoreInst *SI = dyn_cast<StoreInst>(I))
+    return !SI->isVolatile();
+  return true;
+}
+
+/// getPointerOperand - Return the pointer that is being clobbered.
+static Value *getPointerOperand(Instruction *I) {
+  assert(doesClobberMemory(I));
+  if (StoreInst *SI = dyn_cast<StoreInst>(I))
+    return SI->getPointerOperand();
+  if (MemIntrinsic *MI = dyn_cast<MemIntrinsic>(I))
+    return MI->getArgOperand(0);
+
+  IntrinsicInst *II = cast<IntrinsicInst>(I);
+  switch (II->getIntrinsicID()) {
+  default: assert(false && "Unexpected intrinsic!");
+  case Intrinsic::init_trampoline:
+    return II->getArgOperand(0);
+  case Intrinsic::lifetime_end:
+    return II->getArgOperand(1);
+  }
+}
+
+/// getStoreSize - Return the length in bytes of the write by the clobbering
+/// instruction. If variable or unknown, returns -1.
+static unsigned getStoreSize(Instruction *I, const TargetData *TD) {
+  assert(doesClobberMemory(I));
+  if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
+    if (!TD) return -1u;
+    return TD->getTypeStoreSize(SI->getOperand(0)->getType());
+  }
+
+  Value *Len;
+  if (MemIntrinsic *MI = dyn_cast<MemIntrinsic>(I)) {
+    Len = MI->getLength();
+  } else {
+    IntrinsicInst *II = cast<IntrinsicInst>(I);
+    switch (II->getIntrinsicID()) {
+    default: assert(false && "Unexpected intrinsic!");
+    case Intrinsic::init_trampoline:
+      return -1u;
+    case Intrinsic::lifetime_end:
+      Len = II->getArgOperand(0);
+      break;
+    }
+  }
+  if (ConstantInt *LenCI = dyn_cast<ConstantInt>(Len))
+    if (!LenCI->isAllOnesValue())
+      return LenCI->getZExtValue();
+  return -1u;
+}
+
+/// isStoreAtLeastAsWideAs - Return true if the size of the store in I1 is
+/// greater than or equal to the store in I2.  This returns false if we don't
+/// know.
+///
+static bool isStoreAtLeastAsWideAs(Instruction *I1, Instruction *I2,
+                                   const TargetData *TD) {
+  const Type *I1Ty = getPointerOperand(I1)->getType();
+  const Type *I2Ty = getPointerOperand(I2)->getType();
+  
+  // Exactly the same type, must have exactly the same size.
+  if (I1Ty == I2Ty) return true;
+  
+  int I1Size = getStoreSize(I1, TD);
+  int I2Size = getStoreSize(I2, TD);
+  
+  return I1Size != -1 && I2Size != -1 && I1Size >= I2Size;
+}
+
 bool DSE::runOnBasicBlock(BasicBlock &BB) {
-  MemoryDependenceAnalysis& MD = getAnalysis<MemoryDependenceAnalysis>();
+  MemoryDependenceAnalysis &MD = getAnalysis<MemoryDependenceAnalysis>();
   TD = getAnalysisIfAvailable<TargetData>();
 
   bool MadeChange = false;
@@ -90,14 +193,9 @@ bool DSE::runOnBasicBlock(BasicBlock &BB) {
     Instruction *Inst = BBI++;
     
     // If we find a store or a free, get its memory dependence.
-    if (!isa<StoreInst>(Inst) && !isa<FreeInst>(Inst))
+    if (!doesClobberMemory(Inst) && !isFreeCall(Inst))
       continue;
     
-    // Don't molest volatile stores or do queries that will return "clobber".
-    if (StoreInst *SI = dyn_cast<StoreInst>(Inst))
-      if (SI->isVolatile())
-        continue;
-
     MemDepResult InstDep = MD.getDependency(Inst);
     
     // Ignore non-local stores.
@@ -105,12 +203,10 @@ bool DSE::runOnBasicBlock(BasicBlock &BB) {
     if (InstDep.isNonLocal()) continue;
   
     // Handle frees whose dependencies are non-trivial.
-    if (FreeInst *FI = dyn_cast<FreeInst>(Inst)) {
-      MadeChange |= handleFreeWithNonTrivialDependency(FI, InstDep);
+    if (const CallInst *F = isFreeCall(Inst)) {
+      MadeChange |= handleFreeWithNonTrivialDependency(F, InstDep);
       continue;
     }
-    
-    StoreInst *SI = cast<StoreInst>(Inst);
     
     // If not a definite must-alias dependency, ignore it.
     if (!InstDep.isDef())
@@ -118,13 +214,13 @@ bool DSE::runOnBasicBlock(BasicBlock &BB) {
     
     // If this is a store-store dependence, then the previous store is dead so
     // long as this store is at least as big as it.
-    if (StoreInst *DepStore = dyn_cast<StoreInst>(InstDep.getInst()))
-      if (TD &&
-          TD->getTypeStoreSize(DepStore->getOperand(0)->getType()) <=
-          TD->getTypeStoreSize(SI->getOperand(0)->getType())) {
+    if (doesClobberMemory(InstDep.getInst())) {
+      Instruction *DepStore = InstDep.getInst();
+      if (isStoreAtLeastAsWideAs(Inst, DepStore, TD) &&
+          isElidable(DepStore)) {
         // Delete the store and now-dead instructions that feed it.
         DeleteDeadInstruction(DepStore);
-        NumFastStores++;
+        ++NumFastStores;
         MadeChange = true;
 
         // DeleteDeadInstruction can delete the current instruction in loop
@@ -134,23 +230,49 @@ bool DSE::runOnBasicBlock(BasicBlock &BB) {
           --BBI;
         continue;
       }
+    }
+    
+    if (!isElidable(Inst))
+      continue;
     
     // If we're storing the same value back to a pointer that we just
     // loaded from, then the store can be removed.
-    if (LoadInst *DepLoad = dyn_cast<LoadInst>(InstDep.getInst())) {
-      if (SI->getPointerOperand() == DepLoad->getPointerOperand() &&
-          SI->getOperand(0) == DepLoad) {
+    if (StoreInst *SI = dyn_cast<StoreInst>(Inst)) {
+      if (LoadInst *DepLoad = dyn_cast<LoadInst>(InstDep.getInst())) {
+        if (SI->getPointerOperand() == DepLoad->getPointerOperand() &&
+            SI->getOperand(0) == DepLoad) {
+          // DeleteDeadInstruction can delete the current instruction.  Save BBI
+          // in case we need it.
+          WeakVH NextInst(BBI);
+          
+          DeleteDeadInstruction(SI);
+          
+          if (NextInst == 0)  // Next instruction deleted.
+            BBI = BB.begin();
+          else if (BBI != BB.begin())  // Revisit this instruction if possible.
+            --BBI;
+          ++NumFastStores;
+          MadeChange = true;
+          continue;
+        }
+      }
+    }
+    
+    // If this is a lifetime end marker, we can throw away the store.
+    if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(InstDep.getInst())) {
+      if (II->getIntrinsicID() == Intrinsic::lifetime_end) {
+        // Delete the store and now-dead instructions that feed it.
         // DeleteDeadInstruction can delete the current instruction.  Save BBI
         // in case we need it.
         WeakVH NextInst(BBI);
         
-        DeleteDeadInstruction(SI);
+        DeleteDeadInstruction(Inst);
         
         if (NextInst == 0)  // Next instruction deleted.
           BBI = BB.begin();
         else if (BBI != BB.begin())  // Revisit this instruction if possible.
           --BBI;
-        NumFastStores++;
+        ++NumFastStores;
         MadeChange = true;
         continue;
       }
@@ -167,23 +289,24 @@ bool DSE::runOnBasicBlock(BasicBlock &BB) {
 
 /// handleFreeWithNonTrivialDependency - Handle frees of entire structures whose
 /// dependency is a store to a field of that structure.
-bool DSE::handleFreeWithNonTrivialDependency(FreeInst *F, MemDepResult Dep) {
+bool DSE::handleFreeWithNonTrivialDependency(const CallInst *F,
+                                             MemDepResult Dep) {
   AliasAnalysis &AA = getAnalysis<AliasAnalysis>();
   
-  StoreInst *Dependency = dyn_cast_or_null<StoreInst>(Dep.getInst());
-  if (!Dependency || Dependency->isVolatile())
+  Instruction *Dependency = Dep.getInst();
+  if (!Dependency || !doesClobberMemory(Dependency) || !isElidable(Dependency))
     return false;
   
-  Value *DepPointer = Dependency->getPointerOperand()->getUnderlyingObject();
+  Value *DepPointer = getPointerOperand(Dependency)->getUnderlyingObject();
 
   // Check for aliasing.
-  if (AA.alias(F->getPointerOperand(), 1, DepPointer, 1) !=
+  if (AA.alias(F->getArgOperand(0), 1, DepPointer, 1) !=
          AliasAnalysis::MustAlias)
     return false;
   
   // DCE instructions only used to calculate that store
   DeleteDeadInstruction(Dependency);
-  NumFastStores++;
+  ++NumFastStores;
   return true;
 }
 
@@ -219,42 +342,31 @@ bool DSE::handleEndBlock(BasicBlock &BB) {
     --BBI;
     
     // If we find a store whose pointer is dead.
-    if (StoreInst* S = dyn_cast<StoreInst>(BBI)) {
-      if (!S->isVolatile()) {
+    if (doesClobberMemory(BBI)) {
+      if (isElidable(BBI)) {
         // See through pointer-to-pointer bitcasts
-        Value* pointerOperand = S->getPointerOperand()->getUnderlyingObject();
+        Value *pointerOperand = getPointerOperand(BBI)->getUnderlyingObject();
 
         // Alloca'd pointers or byval arguments (which are functionally like
         // alloca's) are valid candidates for removal.
         if (deadPointers.count(pointerOperand)) {
           // DCE instructions only used to calculate that store.
-          BBI++;
-          DeleteDeadInstruction(S, &deadPointers);
-          NumFastStores++;
+          Instruction *Dead = BBI;
+          ++BBI;
+          DeleteDeadInstruction(Dead, &deadPointers);
+          ++NumFastStores;
           MadeChange = true;
+          continue;
         }
       }
       
-      continue;
-    }
-    
-    // We can also remove memcpy's to local variables at the end of a function.
-    if (MemCpyInst *M = dyn_cast<MemCpyInst>(BBI)) {
-      Value *dest = M->getDest()->getUnderlyingObject();
-
-      if (deadPointers.count(dest)) {
-        BBI++;
-        DeleteDeadInstruction(M, &deadPointers);
-        NumFastOther++;
-        MadeChange = true;
+      // Because a memcpy or memmove is also a load, we can't skip it if we
+      // didn't remove it.
+      if (!isa<MemTransferInst>(BBI))
         continue;
-      }
-      
-      // Because a memcpy is also a load, we can't skip it if we didn't remove
-      // it.
     }
     
-    Value* killPointer = 0;
+    Value *killPointer = 0;
     uint64_t killPointerSize = ~0UL;
     
     // If we encounter a use of the pointer, it is no longer considered dead
@@ -262,37 +374,36 @@ bool DSE::handleEndBlock(BasicBlock &BB) {
       // However, if this load is unused and not volatile, we can go ahead and
       // remove it, and not have to worry about it making our pointer undead!
       if (L->use_empty() && !L->isVolatile()) {
-        BBI++;
+        ++BBI;
         DeleteDeadInstruction(L, &deadPointers);
-        NumFastOther++;
+        ++NumFastOther;
         MadeChange = true;
         continue;
       }
       
       killPointer = L->getPointerOperand();
-    } else if (VAArgInst* V = dyn_cast<VAArgInst>(BBI)) {
+    } else if (VAArgInst *V = dyn_cast<VAArgInst>(BBI)) {
       killPointer = V->getOperand(0);
-    } else if (isa<MemCpyInst>(BBI) &&
-               isa<ConstantInt>(cast<MemCpyInst>(BBI)->getLength())) {
-      killPointer = cast<MemCpyInst>(BBI)->getSource();
+    } else if (isa<MemTransferInst>(BBI) &&
+               isa<ConstantInt>(cast<MemTransferInst>(BBI)->getLength())) {
+      killPointer = cast<MemTransferInst>(BBI)->getSource();
       killPointerSize = cast<ConstantInt>(
-                            cast<MemCpyInst>(BBI)->getLength())->getZExtValue();
-    } else if (AllocaInst* A = dyn_cast<AllocaInst>(BBI)) {
+                       cast<MemTransferInst>(BBI)->getLength())->getZExtValue();
+    } else if (AllocaInst *A = dyn_cast<AllocaInst>(BBI)) {
       deadPointers.erase(A);
       
       // Dead alloca's can be DCE'd when we reach them
       if (A->use_empty()) {
-        BBI++;
+        ++BBI;
         DeleteDeadInstruction(A, &deadPointers);
-        NumFastOther++;
+        ++NumFastOther;
         MadeChange = true;
       }
       
       continue;
-    } else if (CallSite::get(BBI).getInstruction() != 0) {
+    } else if (CallSite CS = cast<Value>(BBI)) {
       // If this call does not access memory, it can't
       // be undeadifying any of our pointers.
-      CallSite CS = CallSite::get(BBI);
       if (AA.doesNotAccessMemory(CS))
         continue;
       
@@ -311,28 +422,15 @@ bool DSE::handleEndBlock(BasicBlock &BB) {
           deadPointers.clear();
           return MadeChange;
         }
-
-        // Get size information for the alloca
-        unsigned pointerSize = ~0U;
-        if (TD) {
-          if (AllocaInst* A = dyn_cast<AllocaInst>(*I)) {
-            if (ConstantInt* C = dyn_cast<ConstantInt>(A->getArraySize()))
-              pointerSize = C->getZExtValue() *
-                            TD->getTypeAllocSize(A->getAllocatedType());
-          } else {
-            const PointerType* PT = cast<PointerType>(
-                                                   cast<Argument>(*I)->getType());
-            pointerSize = TD->getTypeAllocSize(PT->getElementType());
-          }
-        }
-
+        
         // See if the call site touches it
-        AliasAnalysis::ModRefResult A = AA.getModRefInfo(CS, *I, pointerSize);
+        AliasAnalysis::ModRefResult A = AA.getModRefInfo(CS, *I,
+                                                         getPointerSize(*I));
         
         if (A == AliasAnalysis::ModRef)
-          modRef++;
+          ++modRef;
         else
-          other++;
+          ++other;
         
         if (A == AliasAnalysis::ModRef || A == AliasAnalysis::Ref)
           dead.push_back(*I);
@@ -346,9 +444,9 @@ bool DSE::handleEndBlock(BasicBlock &BB) {
     } else if (isInstructionTriviallyDead(BBI)) {
       // For any non-memory-affecting non-terminators, DCE them as we reach them
       Instruction *Inst = BBI;
-      BBI++;
+      ++BBI;
       DeleteDeadInstruction(Inst, &deadPointers);
-      NumFastOther++;
+      ++NumFastOther;
       MadeChange = true;
       continue;
     }
@@ -368,11 +466,11 @@ bool DSE::handleEndBlock(BasicBlock &BB) {
 
 /// RemoveUndeadPointers - check for uses of a pointer that make it
 /// undead when scanning for dead stores to alloca's.
-bool DSE::RemoveUndeadPointers(Value* killPointer, uint64_t killPointerSize,
+bool DSE::RemoveUndeadPointers(Value *killPointer, uint64_t killPointerSize,
                                BasicBlock::iterator &BBI,
-                               SmallPtrSet<Value*, 64>& deadPointers) {
+                               SmallPtrSet<Value*, 64> &deadPointers) {
   AliasAnalysis &AA = getAnalysis<AliasAnalysis>();
-                                  
+
   // If the kill pointer can be easily reduced to an alloca,
   // don't bother doing extraneous AA queries.
   if (deadPointers.count(killPointer)) {
@@ -387,34 +485,21 @@ bool DSE::RemoveUndeadPointers(Value* killPointer, uint64_t killPointerSize,
   bool MadeChange = false;
   
   SmallVector<Value*, 16> undead;
-    
+  
   for (SmallPtrSet<Value*, 64>::iterator I = deadPointers.begin(),
-      E = deadPointers.end(); I != E; ++I) {
-    // Get size information for the alloca.
-    unsigned pointerSize = ~0U;
-    if (TD) {
-      if (AllocaInst* A = dyn_cast<AllocaInst>(*I)) {
-        if (ConstantInt* C = dyn_cast<ConstantInt>(A->getArraySize()))
-          pointerSize = C->getZExtValue() *
-                        TD->getTypeAllocSize(A->getAllocatedType());
-      } else {
-        const PointerType* PT = cast<PointerType>(cast<Argument>(*I)->getType());
-        pointerSize = TD->getTypeAllocSize(PT->getElementType());
-      }
-    }
-
+       E = deadPointers.end(); I != E; ++I) {
     // See if this pointer could alias it
-    AliasAnalysis::AliasResult A = AA.alias(*I, pointerSize,
+    AliasAnalysis::AliasResult A = AA.alias(*I, getPointerSize(*I),
                                             killPointer, killPointerSize);
 
     // If it must-alias and a store, we can delete it
     if (isa<StoreInst>(BBI) && A == AliasAnalysis::MustAlias) {
-      StoreInst* S = cast<StoreInst>(BBI);
+      StoreInst *S = cast<StoreInst>(BBI);
 
       // Remove it!
-      BBI++;
+      ++BBI;
       DeleteDeadInstruction(S, &deadPointers);
-      NumFastStores++;
+      ++NumFastStores;
       MadeChange = true;
 
       continue;
@@ -446,9 +531,8 @@ void DSE::DeleteDeadInstruction(Instruction *I,
 
   // Before we touch this instruction, remove it from memdep!
   MemoryDependenceAnalysis &MDA = getAnalysis<MemoryDependenceAnalysis>();
-  while (!NowDeadInsts.empty()) {
-    Instruction *DeadInst = NowDeadInsts.back();
-    NowDeadInsts.pop_back();
+  do {
+    Instruction *DeadInst = NowDeadInsts.pop_back_val();
     
     ++NumFastOther;
     
@@ -472,5 +556,20 @@ void DSE::DeleteDeadInstruction(Instruction *I,
     DeadInst->eraseFromParent();
     
     if (ValueSet) ValueSet->erase(DeadInst);
+  } while (!NowDeadInsts.empty());
+}
+
+unsigned DSE::getPointerSize(Value *V) const {
+  if (TD) {
+    if (AllocaInst *A = dyn_cast<AllocaInst>(V)) {
+      // Get size information for the alloca
+      if (ConstantInt *C = dyn_cast<ConstantInt>(A->getArraySize()))
+        return C->getZExtValue() * TD->getTypeAllocSize(A->getAllocatedType());
+    } else {
+      assert(isa<Argument>(V) && "Expected AllocaInst or Argument!");
+      const PointerType *PT = cast<PointerType>(V->getType());
+      return TD->getTypeAllocSize(PT->getElementType());
+    }
   }
+  return ~0U;
 }

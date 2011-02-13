@@ -13,7 +13,6 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "basicinliner"
-
 #include "llvm/Module.h"
 #include "llvm/Function.h"
 #include "llvm/Transforms/Utils/BasicInliner.h"
@@ -21,6 +20,7 @@
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include <vector>
 
@@ -34,7 +34,7 @@ namespace llvm {
 
   /// BasicInlinerImpl - BasicInliner implemantation class. This hides
   /// container info, used by basic inliner, from public interface.
-  struct VISIBILITY_HIDDEN BasicInlinerImpl {
+  struct BasicInlinerImpl {
     
     BasicInlinerImpl(const BasicInlinerImpl&); // DO NOT IMPLEMENT
     void operator=(const BasicInlinerImpl&); // DO NO IMPLEMENT
@@ -82,14 +82,14 @@ void BasicInlinerImpl::inlineFunctions() {
     Function *F = *FI;
     for (Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
       for (BasicBlock::iterator I = BB->begin(); I != BB->end(); ++I) {
-        CallSite CS = CallSite::get(I);
-        if (CS.getInstruction() && CS.getCalledFunction()
+        CallSite CS(cast<Value>(I));
+        if (CS && CS.getCalledFunction()
             && !CS.getCalledFunction()->isDeclaration())
           CallSites.push_back(CS);
       }
   }
   
-  DOUT << ": " << CallSites.size() << " call sites.\n";
+  DEBUG(dbgs() << ": " << CallSites.size() << " call sites.\n");
   
   // Inline call sites.
   bool Changed = false;
@@ -109,27 +109,28 @@ void BasicInlinerImpl::inlineFunctions() {
         }
         InlineCost IC = CA.getInlineCost(CS, NeverInline);
         if (IC.isAlways()) {        
-          DOUT << "  Inlining: cost=always"
-               <<", call: " << *CS.getInstruction();
+          DEBUG(dbgs() << "  Inlining: cost=always"
+                       <<", call: " << *CS.getInstruction());
         } else if (IC.isNever()) {
-          DOUT << "  NOT Inlining: cost=never"
-               <<", call: " << *CS.getInstruction();
+          DEBUG(dbgs() << "  NOT Inlining: cost=never"
+                       <<", call: " << *CS.getInstruction());
           continue;
         } else {
           int Cost = IC.getValue();
           
           if (Cost >= (int) BasicInlineThreshold) {
-            DOUT << "  NOT Inlining: cost = " << Cost
-                 << ", call: " <<  *CS.getInstruction();
+            DEBUG(dbgs() << "  NOT Inlining: cost = " << Cost
+                         << ", call: " <<  *CS.getInstruction());
             continue;
           } else {
-            DOUT << "  Inlining: cost = " << Cost
-                 << ", call: " <<  *CS.getInstruction();
+            DEBUG(dbgs() << "  Inlining: cost = " << Cost
+                         << ", call: " <<  *CS.getInstruction());
           }
         }
         
         // Inline
-        if (InlineFunction(CS, NULL, TD)) {
+        InlineFunctionInfo IFI(0, TD);
+        if (InlineFunction(CS, IFI)) {
           if (Callee->use_empty() && (Callee->hasLocalLinkage() ||
                                       Callee->hasAvailableExternallyLinkage()))
             DeadFunctions.insert(Callee);

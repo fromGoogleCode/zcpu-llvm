@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "XCore.h"
-#include "XCoreISelLowering.h"
 #include "XCoreTargetMachine.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Function.h"
@@ -40,7 +39,7 @@ using namespace llvm;
 ///
 namespace {
   class XCoreDAGToDAGISel : public SelectionDAGISel {
-    XCoreTargetLowering &Lowering;
+    const XCoreTargetLowering &Lowering;
     const XCoreSubtarget &Subtarget;
 
   public:
@@ -49,7 +48,7 @@ namespace {
         Lowering(*TM.getTargetLowering()), 
         Subtarget(*TM.getSubtargetImpl()) { }
 
-    SDNode *Select(SDValue Op);
+    SDNode *Select(SDNode *N);
     
     /// getI32Imm - Return a target constant with the specified value, of type
     /// i32.
@@ -57,16 +56,25 @@ namespace {
       return CurDAG->getTargetConstant(Imm, MVT::i32);
     }
 
+    inline bool immMskBitp(SDNode *inN) const {
+      ConstantSDNode *N = cast<ConstantSDNode>(inN);
+      uint32_t value = (uint32_t)N->getZExtValue();
+      if (!isMask_32(value)) {
+        return false;
+      }
+      int msksize = 32 - CountLeadingZeros_32(value);
+      return (msksize >= 1 && msksize <= 8) ||
+              msksize == 16 || msksize == 24 || msksize == 32;
+    }
+
     // Complex Pattern Selectors.
-    bool SelectADDRspii(SDValue Op, SDValue Addr, SDValue &Base,
+    bool SelectADDRspii(SDNode *Op, SDValue Addr, SDValue &Base,
                         SDValue &Offset);
-    bool SelectADDRdpii(SDValue Op, SDValue Addr, SDValue &Base,
+    bool SelectADDRdpii(SDNode *Op, SDValue Addr, SDValue &Base,
                         SDValue &Offset);
-    bool SelectADDRcpii(SDValue Op, SDValue Addr, SDValue &Base,
+    bool SelectADDRcpii(SDNode *Op, SDValue Addr, SDValue &Base,
                         SDValue &Offset);
     
-    virtual void InstructionSelect();
-
     virtual const char *getPassName() const {
       return "XCore DAG->DAG Pattern Instruction Selection";
     } 
@@ -83,7 +91,7 @@ FunctionPass *llvm::createXCoreISelDag(XCoreTargetMachine &TM) {
   return new XCoreDAGToDAGISel(TM);
 }
 
-bool XCoreDAGToDAGISel::SelectADDRspii(SDValue Op, SDValue Addr,
+bool XCoreDAGToDAGISel::SelectADDRspii(SDNode *Op, SDValue Addr,
                                   SDValue &Base, SDValue &Offset) {
   FrameIndexSDNode *FIN = 0;
   if ((FIN = dyn_cast<FrameIndexSDNode>(Addr))) {
@@ -105,7 +113,7 @@ bool XCoreDAGToDAGISel::SelectADDRspii(SDValue Op, SDValue Addr,
   return false;
 }
 
-bool XCoreDAGToDAGISel::SelectADDRdpii(SDValue Op, SDValue Addr,
+bool XCoreDAGToDAGISel::SelectADDRdpii(SDNode *Op, SDValue Addr,
                                   SDValue &Base, SDValue &Offset) {
   if (Addr.getOpcode() == XCoreISD::DPRelativeWrapper) {
     Base = Addr.getOperand(0);
@@ -126,7 +134,7 @@ bool XCoreDAGToDAGISel::SelectADDRdpii(SDValue Op, SDValue Addr,
   return false;
 }
 
-bool XCoreDAGToDAGISel::SelectADDRcpii(SDValue Op, SDValue Addr,
+bool XCoreDAGToDAGISel::SelectADDRcpii(SDNode *Op, SDValue Addr,
                                   SDValue &Base, SDValue &Offset) {
   if (Addr.getOpcode() == XCoreISD::CPRelativeWrapper) {
     Base = Addr.getOperand(0);
@@ -147,88 +155,64 @@ bool XCoreDAGToDAGISel::SelectADDRcpii(SDValue Op, SDValue Addr,
   return false;
 }
 
-/// InstructionSelect - This callback is invoked by
-/// SelectionDAGISel when it has created a SelectionDAG for us to codegen.
-void XCoreDAGToDAGISel::
-InstructionSelect() {
-  DEBUG(BB->dump());
-
-  // Select target instructions for the DAG.
-  SelectRoot(*CurDAG);
-  
-  CurDAG->RemoveDeadNodes();
-}
-
-SDNode *XCoreDAGToDAGISel::Select(SDValue Op) {
-  SDNode *N = Op.getNode();
+SDNode *XCoreDAGToDAGISel::Select(SDNode *N) {
   DebugLoc dl = N->getDebugLoc();
   EVT NVT = N->getValueType(0);
   if (NVT == MVT::i32) {
     switch (N->getOpcode()) {
       default: break;
       case ISD::Constant: {
-        if (Predicate_immMskBitp(N)) {
-          SDValue MskSize = Transform_msksize_xform(N);
-          return CurDAG->getTargetNode(XCore::MKMSK_rus, dl, MVT::i32, MskSize);
+        uint64_t Val = cast<ConstantSDNode>(N)->getZExtValue();
+        if (immMskBitp(N)) {
+          // Transformation function: get the size of a mask
+          // Look for the first non-zero bit
+          SDValue MskSize = getI32Imm(32 - CountLeadingZeros_32(Val));
+          return CurDAG->getMachineNode(XCore::MKMSK_rus, dl,
+                                        MVT::i32, MskSize);
         }
-        else if (! Predicate_immU16(N)) {
-          unsigned Val = cast<ConstantSDNode>(N)->getZExtValue();
+        else if (!isUInt<16>(Val)) {
           SDValue CPIdx =
             CurDAG->getTargetConstantPool(ConstantInt::get(
                                   Type::getInt32Ty(*CurDAG->getContext()), Val),
                                           TLI.getPointerTy());
-          return CurDAG->getTargetNode(XCore::LDWCP_lru6, dl, MVT::i32, 
-                                       MVT::Other, CPIdx, 
-                                       CurDAG->getEntryNode());
+          return CurDAG->getMachineNode(XCore::LDWCP_lru6, dl, MVT::i32, 
+                                        MVT::Other, CPIdx, 
+                                        CurDAG->getEntryNode());
         }
         break;
-      }
-      case ISD::SMUL_LOHI: {
-        // FIXME fold addition into the macc instruction
-        if (!Subtarget.isXS1A()) {
-          SDValue Zero(CurDAG->getTargetNode(XCore::LDC_ru6, dl, MVT::i32,
-                                  CurDAG->getTargetConstant(0, MVT::i32)), 0);
-          SDValue Ops[] = { Zero, Zero, Op.getOperand(0), Op.getOperand(1) };
-          SDNode *ResNode = CurDAG->getTargetNode(XCore::MACCS_l4r, dl,
-                                                  MVT::i32, MVT::i32, Ops, 4);
-          ReplaceUses(SDValue(N, 0), SDValue(ResNode, 1));
-          ReplaceUses(SDValue(N, 1), SDValue(ResNode, 0));
-          return NULL;
-        }
-        break;
-      }
-      case ISD::UMUL_LOHI: {
-        // FIXME fold addition into the macc / lmul instruction
-        SDValue Zero(CurDAG->getTargetNode(XCore::LDC_ru6, dl, MVT::i32,
-                                  CurDAG->getTargetConstant(0, MVT::i32)), 0);
-        SDValue Ops[] = { Op.getOperand(0), Op.getOperand(1),
-                            Zero, Zero };
-        SDNode *ResNode = CurDAG->getTargetNode(XCore::LMUL_l6r, dl, MVT::i32,
-                                                MVT::i32, Ops, 4);
-        ReplaceUses(SDValue(N, 0), SDValue(ResNode, 1));
-        ReplaceUses(SDValue(N, 1), SDValue(ResNode, 0));
-        return NULL;
       }
       case XCoreISD::LADD: {
-        if (!Subtarget.isXS1A()) {
-          SDValue Ops[] = { Op.getOperand(0), Op.getOperand(1),
-                              Op.getOperand(2) };
-          return CurDAG->getTargetNode(XCore::LADD_l5r, dl, MVT::i32, MVT::i32,
-                                       Ops, 3);
-        }
-        break;
+        SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                            N->getOperand(2) };
+        return CurDAG->getMachineNode(XCore::LADD_l5r, dl, MVT::i32, MVT::i32,
+                                      Ops, 3);
       }
       case XCoreISD::LSUB: {
-        if (!Subtarget.isXS1A()) {
-          SDValue Ops[] = { Op.getOperand(0), Op.getOperand(1),
-                              Op.getOperand(2) };
-          return CurDAG->getTargetNode(XCore::LSUB_l5r, dl, MVT::i32, MVT::i32,
-                                       Ops, 3);
-        }
-        break;
+        SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                            N->getOperand(2) };
+        return CurDAG->getMachineNode(XCore::LSUB_l5r, dl, MVT::i32, MVT::i32,
+                                      Ops, 3);
+      }
+      case XCoreISD::MACCU: {
+        SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                          N->getOperand(2), N->getOperand(3) };
+        return CurDAG->getMachineNode(XCore::MACCU_l4r, dl, MVT::i32, MVT::i32,
+                                      Ops, 4);
+      }
+      case XCoreISD::MACCS: {
+        SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                          N->getOperand(2), N->getOperand(3) };
+        return CurDAG->getMachineNode(XCore::MACCS_l4r, dl, MVT::i32, MVT::i32,
+                                      Ops, 4);
+      }
+      case XCoreISD::LMUL: {
+        SDValue Ops[] = { N->getOperand(0), N->getOperand(1),
+                          N->getOperand(2), N->getOperand(3) };
+        return CurDAG->getMachineNode(XCore::LMUL_l6r, dl, MVT::i32, MVT::i32,
+                                      Ops, 4);
       }
       // Other cases are autogenerated.
     }
   }
-  return SelectCode(Op);
+  return SelectCode(N);
 }

@@ -52,13 +52,6 @@ BitVector SparcRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   return Reserved;
 }
 
-
-const TargetRegisterClass* const*
-SparcRegisterInfo::getCalleeSavedRegClasses(const MachineFunction *MF) const {
-  static const TargetRegisterClass * const CalleeSavedRegClasses[] = { 0 };
-  return CalleeSavedRegClasses;
-}
-
 bool SparcRegisterInfo::hasFP(const MachineFunction &MF) const {
   return false;
 }
@@ -76,8 +69,9 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
   MBB.erase(I);
 }
 
-void SparcRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
-                                            int SPAdj, RegScavenger *RS) const {
+void
+SparcRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
+                                       int SPAdj, RegScavenger *RS) const {
   assert(SPAdj == 0 && "Unexpected");
 
   unsigned i = 0;
@@ -122,8 +116,7 @@ void SparcRegisterInfo::emitPrologue(MachineFunction &MF) const {
   MachineBasicBlock &MBB = MF.front();
   MachineFrameInfo *MFI = MF.getFrameInfo();
   MachineBasicBlock::iterator MBBI = MBB.begin();
-  DebugLoc dl = (MBBI != MBB.end() ?
-                 MBBI->getDebugLoc() : DebugLoc::getUnknownLoc());
+  DebugLoc dl = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
 
   // Get the number of bytes to allocate from the FrameInfo
   int NumBytes = (int) MFI->getStackSize();
@@ -169,13 +162,11 @@ void SparcRegisterInfo::emitEpilogue(MachineFunction &MF,
 }
 
 unsigned SparcRegisterInfo::getRARegister() const {
-  llvm_unreachable("What is the return address register");
-  return 0;
+  return SP::I7;
 }
 
-unsigned SparcRegisterInfo::getFrameRegister(MachineFunction &MF) const {
-  llvm_unreachable("What is the frame register");
-  return SP::G1;
+unsigned SparcRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
+  return SP::I6;
 }
 
 unsigned SparcRegisterInfo::getEHExceptionRegister() const {
@@ -189,8 +180,7 @@ unsigned SparcRegisterInfo::getEHHandlerRegister() const {
 }
 
 int SparcRegisterInfo::getDwarfRegNum(unsigned RegNum, bool isEH) const {
-  llvm_unreachable("What is the dwarf register number");
-  return -1;
+  return SparcGenRegisterInfo::getDwarfRegNumFull(RegNum, 0);
 }
 
 #include "SparcGenRegisterInfo.inc"

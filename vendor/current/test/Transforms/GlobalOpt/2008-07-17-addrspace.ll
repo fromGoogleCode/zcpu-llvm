@@ -2,9 +2,9 @@
 ; values. This used to crash, because globalopt forgot to put the new var in the
 ; same address space as the old one.
 
-; RUN: llvm-as < %s | opt -globalopt | llvm-dis > %t
+; RUN: opt < %s -globalopt -S > %t
 ; Check that the new global values still have their address space
-; RUN: cat %t | grep global.*addrspace
+; RUN: cat %t | grep addrspace.*global
 
 @struct = internal addrspace(1) global { i32, i32 } zeroinitializer
 @array = internal addrspace(1) global [ 2 x i32 ] zeroinitializer 

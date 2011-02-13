@@ -22,6 +22,7 @@
 namespace llvm {
 
 class TargetInstrDesc;
+class MDNode;
 
 namespace RegState {
   enum {
@@ -31,6 +32,7 @@ namespace RegState {
     Dead           = 0x10,
     Undef          = 0x20,
     EarlyClobber   = 0x40,
+    Debug          = 0x80,
     ImplicitDefine = Implicit | Define,
     ImplicitKill   = Implicit | Kill
   };
@@ -61,7 +63,8 @@ public:
                                              flags & RegState::Dead,
                                              flags & RegState::Undef,
                                              flags & RegState::EarlyClobber,
-                                             SubReg));
+                                             SubReg,
+                                             flags & RegState::Debug));
     return *this;
   }
 
@@ -101,34 +104,36 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &addGlobalAddress(GlobalValue *GV,
+  const MachineInstrBuilder &addGlobalAddress(const GlobalValue *GV,
                                               int64_t Offset = 0,
                                           unsigned char TargetFlags = 0) const {
     MI->addOperand(MachineOperand::CreateGA(GV, Offset, TargetFlags));
     return *this;
   }
 
-  const MachineInstrBuilder &addMetadata(MDNode *N,
-					 int64_t Offset = 0,
-					 unsigned char TargetFlags = 0) const {
-    MI->addOperand(MachineOperand::CreateMDNode(N, Offset, TargetFlags));
-    return *this;
-  }
-
   const MachineInstrBuilder &addExternalSymbol(const char *FnName,
-                                               int64_t Offset = 0,
                                           unsigned char TargetFlags = 0) const {
-    MI->addOperand(MachineOperand::CreateES(FnName, Offset, TargetFlags));
+    MI->addOperand(MachineOperand::CreateES(FnName, TargetFlags));
     return *this;
   }
 
-  const MachineInstrBuilder &addMemOperand(const MachineMemOperand &MMO) const {
+  const MachineInstrBuilder &addMemOperand(MachineMemOperand *MMO) const {
     MI->addMemOperand(*MI->getParent()->getParent(), MMO);
     return *this;
   }
 
   const MachineInstrBuilder &addOperand(const MachineOperand &MO) const {
     MI->addOperand(MO);
+    return *this;
+  }
+
+  const MachineInstrBuilder &addMetadata(const MDNode *MD) const {
+    MI->addOperand(MachineOperand::CreateMetadata(MD));
+    return *this;
+  }
+  
+  const MachineInstrBuilder &addSym(MCSymbol *Sym) const {
+    MI->addOperand(MachineOperand::CreateMCSymbol(Sym));
     return *this;
   }
 };
@@ -192,7 +197,7 @@ inline MachineInstrBuilder BuildMI(MachineBasicBlock *BB,
 
 /// BuildMI - This version of the builder inserts the newly-built
 /// instruction at the end of the given MachineBasicBlock, and sets up the first
-/// operand as a destination virtual register. 
+/// operand as a destination virtual register.
 ///
 inline MachineInstrBuilder BuildMI(MachineBasicBlock *BB,
                                    DebugLoc DL,

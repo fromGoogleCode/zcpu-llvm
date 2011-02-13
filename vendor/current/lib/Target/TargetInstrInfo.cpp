@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetAsmInfo.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
@@ -28,6 +28,10 @@ const TargetRegisterClass *
 TargetOperandInfo::getRegClass(const TargetRegisterInfo *TRI) const {
   if (isLookupPtrRegClass())
     return TRI->getPointerRegClass(RegClass);
+  // Instructions like INSERT_SUBREG do not have fixed register classes.
+  if (RegClass < 0)
+    return 0;
+  // Otherwise just look it up normally.
   return TRI->getRegClass(RegClass);
 }
 
@@ -73,21 +77,21 @@ bool TargetInstrInfo::isUnpredicatedTerminator(const MachineInstr *MI) const {
 /// Variable-length instructions are not handled here; this function
 /// may be overloaded in the target code to do that.
 unsigned TargetInstrInfo::getInlineAsmLength(const char *Str,
-                                             const TargetAsmInfo &TAI) const {
+                                             const MCAsmInfo &MAI) const {
   
   
   // Count the number of instructions in the asm.
   bool atInsnStart = true;
   unsigned Length = 0;
   for (; *Str; ++Str) {
-    if (*Str == '\n' || *Str == TAI.getSeparatorChar())
+    if (*Str == '\n' || *Str == MAI.getSeparatorChar())
       atInsnStart = true;
     if (atInsnStart && !isspace(*Str)) {
-      Length += TAI.getMaxInstLength();
+      Length += MAI.getMaxInstLength();
       atInsnStart = false;
     }
-    if (atInsnStart && strncmp(Str, TAI.getCommentString(),
-                               strlen(TAI.getCommentString())) == 0)
+    if (atInsnStart && strncmp(Str, MAI.getCommentString(),
+                               strlen(MAI.getCommentString())) == 0)
       atInsnStart = false;
   }
   

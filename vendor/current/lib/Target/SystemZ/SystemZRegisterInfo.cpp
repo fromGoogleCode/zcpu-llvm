@@ -47,22 +47,6 @@ SystemZRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   return CalleeSavedRegs;
 }
 
-const TargetRegisterClass* const*
-SystemZRegisterInfo::getCalleeSavedRegClasses(const MachineFunction *MF) const {
-  static const TargetRegisterClass * const CalleeSavedRegClasses[] = {
-    &SystemZ::GR64RegClass, &SystemZ::GR64RegClass,
-    &SystemZ::GR64RegClass, &SystemZ::GR64RegClass,
-    &SystemZ::GR64RegClass, &SystemZ::GR64RegClass,
-    &SystemZ::GR64RegClass, &SystemZ::GR64RegClass,
-    &SystemZ::GR64RegClass, &SystemZ::GR64RegClass,
-    &SystemZ::FP64RegClass, &SystemZ::FP64RegClass,
-    &SystemZ::FP64RegClass, &SystemZ::FP64RegClass,
-    &SystemZ::FP64RegClass, &SystemZ::FP64RegClass,
-    &SystemZ::FP64RegClass, &SystemZ::FP64RegClass, 0
-  };
-  return CalleeSavedRegClasses;
-}
-
 BitVector SystemZRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   if (hasFP(MF))
@@ -77,7 +61,7 @@ BitVector SystemZRegisterInfo::getReservedRegs(const MachineFunction &MF) const 
 /// allocas or if frame pointer elimination is disabled.
 bool SystemZRegisterInfo::hasFP(const MachineFunction &MF) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
-  return NoFramePointerElim || MFI->hasVarSizedObjects();
+  return DisableFramePointerElim(MF) || MFI->hasVarSizedObjects();
 }
 
 void SystemZRegisterInfo::
@@ -86,10 +70,11 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
   MBB.erase(I);
 }
 
-int SystemZRegisterInfo::getFrameIndexOffset(MachineFunction &MF, int FI) const {
+int SystemZRegisterInfo::getFrameIndexOffset(const MachineFunction &MF,
+                                             int FI) const {
   const TargetFrameInfo &TFI = *MF.getTarget().getFrameInfo();
-  MachineFrameInfo *MFI = MF.getFrameInfo();
-  SystemZMachineFunctionInfo *SystemZMFI =
+  const MachineFrameInfo *MFI = MF.getFrameInfo();
+  const SystemZMachineFunctionInfo *SystemZMFI =
     MF.getInfo<SystemZMachineFunctionInfo>();
   int Offset = MFI->getObjectOffset(FI) + MFI->getOffsetAdjustment();
   uint64_t StackSize = MFI->getStackSize();
@@ -107,8 +92,9 @@ int SystemZRegisterInfo::getFrameIndexOffset(MachineFunction &MF, int FI) const 
   return Offset;
 }
 
-void SystemZRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
-                                            int SPAdj, RegScavenger *RS) const {
+void
+SystemZRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
+                                         int SPAdj, RegScavenger *RS) const {
   assert(SPAdj == 0 && "Unxpected");
 
   unsigned i = 0;
@@ -130,7 +116,8 @@ void SystemZRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   // Offset is a either 12-bit unsigned or 20-bit signed integer.
   // FIXME: handle "too long" displacements.
-  int Offset = getFrameIndexOffset(MF, FrameIndex) + MI.getOperand(i+1).getImm();
+  int Offset =
+    getFrameIndexOffset(MF, FrameIndex) + MI.getOperand(i+1).getImm();
 
   // Check whether displacement is too long to fit into 12 bit zext field.
   MI.setDesc(TII.getMemoryInstr(MI.getOpcode(), Offset));
@@ -190,14 +177,13 @@ void emitSPUpdate(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
     Chunk = (1LL << 15) - 1;
   }
 
-  DebugLoc DL = (MBBI != MBB.end() ? MBBI->getDebugLoc() :
-                 DebugLoc::getUnknownLoc());
+  DebugLoc DL = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
 
   while (Offset) {
     uint64_t ThisVal = (Offset > Chunk) ? Chunk : Offset;
     MachineInstr *MI =
       BuildMI(MBB, MBBI, DL, TII.get(Opc), SystemZ::R15D)
-      .addReg(SystemZ::R15D).addImm((isSub ? -(int64_t)ThisVal : ThisVal));
+      .addReg(SystemZ::R15D).addImm(isSub ? -ThisVal : ThisVal);
     // The PSW implicit def is dead.
     MI->getOperand(3).setIsDead();
     Offset -= ThisVal;
@@ -211,8 +197,7 @@ void SystemZRegisterInfo::emitPrologue(MachineFunction &MF) const {
   SystemZMachineFunctionInfo *SystemZMFI =
     MF.getInfo<SystemZMachineFunctionInfo>();
   MachineBasicBlock::iterator MBBI = MBB.begin();
-  DebugLoc DL = (MBBI != MBB.end() ? MBBI->getDebugLoc() :
-                 DebugLoc::getUnknownLoc());
+  DebugLoc DL = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
 
   // Get the number of bytes to allocate from the FrameInfo.
   // Note that area for callee-saved stuff is already allocated, thus we need to
@@ -244,7 +229,7 @@ void SystemZRegisterInfo::emitPrologue(MachineFunction &MF) const {
       .addReg(SystemZ::R15D);
 
     // Mark the FramePtr as live-in in every block except the entry.
-    for (MachineFunction::iterator I = next(MF.begin()), E = MF.end();
+    for (MachineFunction::iterator I = llvm::next(MF.begin()), E = MF.end();
          I != E; ++I)
       I->addLiveIn(SystemZ::R11D);
 
@@ -259,7 +244,6 @@ void SystemZRegisterInfo::emitEpilogue(MachineFunction &MF,
   SystemZMachineFunctionInfo *SystemZMFI =
     MF.getInfo<SystemZMachineFunctionInfo>();
   unsigned RetOpcode = MBBI->getOpcode();
-  DebugLoc DL = MBBI->getDebugLoc();
 
   switch (RetOpcode) {
   case SystemZ::RET: break;  // These are ok
@@ -318,7 +302,8 @@ unsigned SystemZRegisterInfo::getRARegister() const {
   return 0;
 }
 
-unsigned SystemZRegisterInfo::getFrameRegister(MachineFunction &MF) const {
+unsigned
+SystemZRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
   assert(0 && "What is the frame register");
   return 0;
 }

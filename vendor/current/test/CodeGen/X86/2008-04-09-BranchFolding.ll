@@ -1,4 +1,4 @@
-; RUN: llvm-as < %s | llc -march=x86 | not grep jmp
+; RUN: llc < %s -march=x86 | not grep jmp
 
 	%struct..0anon = type { i32 }
 	%struct.binding_level = type { %struct.tree_node*, %struct.tree_node*, %struct.tree_node*, %struct.tree_node*, %struct.tree_node*, %struct.binding_level*, i8, i8, i8, i8, i8, i32, %struct.tree_node* }
@@ -10,7 +10,7 @@
 define fastcc %struct.tree_node* @pushdecl(%struct.tree_node* %x) nounwind  {
 entry:
 	%tmp3.i40 = icmp eq %struct.binding_level* null, null		; <i1> [#uses=2]
-	br i1 false, label %bb143, label %bb140
+	br label %bb140
 bb140:		; preds = %entry
 	br i1 %tmp3.i40, label %bb160, label %bb17.i
 bb17.i:		; preds = %bb140

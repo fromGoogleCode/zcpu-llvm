@@ -58,7 +58,7 @@ namespace llvm {
     explicit SystemZTargetLowering(SystemZTargetMachine &TM);
 
     /// LowerOperation - Provide custom lowering hooks for some operations.
-    virtual SDValue LowerOperation(SDValue Op, SelectionDAG &DAG);
+    virtual SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const;
 
     /// getTargetNodeName - This method returns the name of a target specific
     /// DAG node.
@@ -74,62 +74,70 @@ namespace llvm {
     TargetLowering::ConstraintType
     getConstraintType(const std::string &Constraint) const;
 
-    SDValue LowerBR_CC(SDValue Op, SelectionDAG &DAG);
-    SDValue LowerSELECT_CC(SDValue Op, SelectionDAG &DAG);
-    SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG);
-    SDValue LowerJumpTable(SDValue Op, SelectionDAG &DAG);
-    SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG);
+    SDValue LowerBR_CC(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerJumpTable(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
 
     SDValue EmitCmp(SDValue LHS, SDValue RHS,
                     ISD::CondCode CC, SDValue &SystemZCC,
-                    SelectionDAG &DAG);
+                    SelectionDAG &DAG) const;
 
 
     MachineBasicBlock* EmitInstrWithCustomInserter(MachineInstr *MI,
                                                    MachineBasicBlock *BB) const;
 
+    /// isFPImmLegal - Returns true if the target can instruction select the
+    /// specified FP immediate natively. If false, the legalizer will
+    /// materialize the FP immediate as a load from a constant pool.
+    virtual bool isFPImmLegal(const APFloat &Imm, EVT VT) const;
+
   private:
     SDValue LowerCCCCallTo(SDValue Chain, SDValue Callee,
-                           unsigned CallConv, bool isVarArg,
+                           CallingConv::ID CallConv, bool isVarArg,
                            bool isTailCall,
                            const SmallVectorImpl<ISD::OutputArg> &Outs,
+                           const SmallVectorImpl<SDValue> &OutVals,
                            const SmallVectorImpl<ISD::InputArg> &Ins,
                            DebugLoc dl, SelectionDAG &DAG,
-                           SmallVectorImpl<SDValue> &InVals);
+                           SmallVectorImpl<SDValue> &InVals) const;
 
     SDValue LowerCCCArguments(SDValue Chain,
-                              unsigned CallConv,
+                              CallingConv::ID CallConv,
                               bool isVarArg,
                               const SmallVectorImpl<ISD::InputArg> &Ins,
                               DebugLoc dl,
                               SelectionDAG &DAG,
-                              SmallVectorImpl<SDValue> &InVals);
+                              SmallVectorImpl<SDValue> &InVals) const;
 
     SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
-                            unsigned CallConv, bool isVarArg,
+                            CallingConv::ID CallConv, bool isVarArg,
                             const SmallVectorImpl<ISD::InputArg> &Ins,
                             DebugLoc dl, SelectionDAG &DAG,
-                            SmallVectorImpl<SDValue> &InVals);
+                            SmallVectorImpl<SDValue> &InVals) const;
 
     virtual SDValue
       LowerFormalArguments(SDValue Chain,
-                           unsigned CallConv, bool isVarArg,
+                           CallingConv::ID CallConv, bool isVarArg,
                            const SmallVectorImpl<ISD::InputArg> &Ins,
                            DebugLoc dl, SelectionDAG &DAG,
-                           SmallVectorImpl<SDValue> &InVals);
+                           SmallVectorImpl<SDValue> &InVals) const;
     virtual SDValue
       LowerCall(SDValue Chain, SDValue Callee,
-                unsigned CallConv, bool isVarArg, bool isTailCall,
+                CallingConv::ID CallConv, bool isVarArg, bool &isTailCall,
                 const SmallVectorImpl<ISD::OutputArg> &Outs,
+                const SmallVectorImpl<SDValue> &OutVals,
                 const SmallVectorImpl<ISD::InputArg> &Ins,
                 DebugLoc dl, SelectionDAG &DAG,
-                SmallVectorImpl<SDValue> &InVals);
+                SmallVectorImpl<SDValue> &InVals) const;
 
     virtual SDValue
       LowerReturn(SDValue Chain,
-                  unsigned CallConv, bool isVarArg,
+                  CallingConv::ID CallConv, bool isVarArg,
                   const SmallVectorImpl<ISD::OutputArg> &Outs,
-                  DebugLoc dl, SelectionDAG &DAG);
+                  const SmallVectorImpl<SDValue> &OutVals,
+                  DebugLoc dl, SelectionDAG &DAG) const;
 
     const SystemZSubtarget &Subtarget;
     const SystemZTargetMachine &TM;

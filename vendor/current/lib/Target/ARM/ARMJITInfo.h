@@ -61,6 +61,10 @@ namespace llvm {
     virtual void *emitGlobalValueIndirectSym(const GlobalValue* GV, void *ptr,
                                             JITCodeEmitter &JCE);
 
+    // getStubLayout - Returns the size and alignment of the largest call stub
+    // on ARM.
+    virtual StubLayout getStubLayout();
+
     /// emitFunctionStub - Use the specified JITCodeEmitter object to emit a
     /// small native function that simply calls the function at the specified
     /// address.
@@ -139,7 +143,8 @@ namespace llvm {
       JumpTableId2AddrMap[JTI] = Addr;
     }
 
-    /// getPCLabelAddr - Retrieve the address of the PC label of the specified id.
+    /// getPCLabelAddr - Retrieve the address of the PC label of the
+    /// specified id.
     intptr_t getPCLabelAddr(unsigned Id) const {
       DenseMap<unsigned, intptr_t>::const_iterator I = PCLabelMap.find(Id);
       assert(I != PCLabelMap.end());

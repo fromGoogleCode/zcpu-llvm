@@ -26,15 +26,14 @@ add_subdirectory(llvm-prof)
 add_subdirectory(llvm-link)
 add_subdirectory(lli)
 
-# gccas and gccld are deprecated:
-# add_subdirectory(gccas)
-# add_subdirectory(gccld)
 add_subdirectory(llvm-extract)
-add_subdirectory(llvm-db)
+add_subdirectory(llvm-diff)
 
 add_subdirectory(bugpoint)
+add_subdirectory(bugpoint-passes)
 add_subdirectory(llvm-bcanalyzer)
 add_subdirectory(llvm-stub)
+add_subdirectory(edis)
 add_subdirectory(llvmc)
 
 if( EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/clang/CMakeLists.txt )

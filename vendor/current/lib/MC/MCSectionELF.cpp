@@ -8,28 +8,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/MC/MCSectionELF.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetAsmInfo.h"
-
 using namespace llvm;
 
-MCSectionELF *MCSectionELF::
-Create(const StringRef &Section, unsigned Type, unsigned Flags,
-       SectionKind K, bool isExplicit, MCContext &Ctx) {
-  return new (Ctx) MCSectionELF(Section, Type, Flags, K, isExplicit);
-}
+MCSectionELF::~MCSectionELF() {} // anchor.
 
 // ShouldOmitSectionDirective - Decides whether a '.section' directive
 // should be printed before the section name
-bool MCSectionELF::ShouldOmitSectionDirective(const char *Name,
-                                        const TargetAsmInfo &TAI) const {
+bool MCSectionELF::ShouldOmitSectionDirective(StringRef Name,
+                                              const MCAsmInfo &MAI) const {
   
   // FIXME: Does .section .bss/.data/.text work everywhere??
-  if (strcmp(Name, ".text") == 0 ||
-      strcmp(Name, ".data") == 0 ||
-      (strcmp(Name, ".bss") == 0 &&
-       !TAI.usesELFSectionDirectiveForBSS())) 
+  if (Name == ".text" || Name == ".data" ||
+      (Name == ".bss" && !MAI.usesELFSectionDirectiveForBSS()))
     return true;
 
   return false;
@@ -37,17 +31,16 @@ bool MCSectionELF::ShouldOmitSectionDirective(const char *Name,
 
 // ShouldPrintSectionType - Only prints the section type if supported
 bool MCSectionELF::ShouldPrintSectionType(unsigned Ty) const {
-  
   if (IsExplicit && !(Ty == SHT_NOBITS || Ty == SHT_PROGBITS))
     return false;
 
   return true;
 }
 
-void MCSectionELF::PrintSwitchToSection(const TargetAsmInfo &TAI,
+void MCSectionELF::PrintSwitchToSection(const MCAsmInfo &MAI,
                                         raw_ostream &OS) const {
    
-  if (ShouldOmitSectionDirective(SectionName.c_str(), TAI)) {
+  if (ShouldOmitSectionDirective(SectionName, MAI)) {
     OS << '\t' << getSectionName() << '\n';
     return;
   }
@@ -55,7 +48,7 @@ void MCSectionELF::PrintSwitchToSection(const TargetAsmInfo &TAI,
   OS << "\t.section\t" << getSectionName();
   
   // Handle the weird solaris syntax if desired.
-  if (TAI.usesSunStyleELFSectionSwitchSyntax() && 
+  if (MAI.usesSunStyleELFSectionSwitchSyntax() && 
       !(Flags & MCSectionELF::SHF_MERGE)) {
     if (Flags & MCSectionELF::SHF_ALLOC)
       OS << ",#alloc";
@@ -65,59 +58,63 @@ void MCSectionELF::PrintSwitchToSection(const TargetAsmInfo &TAI,
       OS << ",#write";
     if (Flags & MCSectionELF::SHF_TLS)
       OS << ",#tls";
-  } else {
-    OS << ",\"";
-    if (Flags & MCSectionELF::SHF_ALLOC)
-      OS << 'a';
-    if (Flags & MCSectionELF::SHF_EXECINSTR)
-      OS << 'x';
-    if (Flags & MCSectionELF::SHF_WRITE)
-      OS << 'w';
-    if (Flags & MCSectionELF::SHF_MERGE)
-      OS << 'M';
-    if (Flags & MCSectionELF::SHF_STRINGS)
-      OS << 'S';
-    if (Flags & MCSectionELF::SHF_TLS)
-      OS << 'T';
-    
-    // If there are target-specific flags, print them.
-    if (Flags & ~MCSectionELF::TARGET_INDEP_SHF)
-      PrintTargetSpecificSectionFlags(TAI, OS);
-    
-    OS << '"';
+    OS << '\n';
+    return;
+  }
+  
+  OS << ",\"";
+  if (Flags & MCSectionELF::SHF_ALLOC)
+    OS << 'a';
+  if (Flags & MCSectionELF::SHF_EXECINSTR)
+    OS << 'x';
+  if (Flags & MCSectionELF::SHF_WRITE)
+    OS << 'w';
+  if (Flags & MCSectionELF::SHF_MERGE)
+    OS << 'M';
+  if (Flags & MCSectionELF::SHF_STRINGS)
+    OS << 'S';
+  if (Flags & MCSectionELF::SHF_TLS)
+    OS << 'T';
+  
+  // If there are target-specific flags, print them.
+  if (Flags & MCSectionELF::XCORE_SHF_CP_SECTION)
+    OS << 'c';
+  if (Flags & MCSectionELF::XCORE_SHF_DP_SECTION)
+    OS << 'd';
+  
+  OS << '"';
 
-    if (ShouldPrintSectionType(Type)) {
-      OS << ',';
-   
-      // If comment string is '@', e.g. as on ARM - use '%' instead
-      if (TAI.getCommentString()[0] == '@')
-        OS << '%';
-      else
-        OS << '@';
-    
-      if (Type == MCSectionELF::SHT_INIT_ARRAY)
-        OS << "init_array";
-      else if (Type == MCSectionELF::SHT_FINI_ARRAY)
-        OS << "fini_array";
-      else if (Type == MCSectionELF::SHT_PREINIT_ARRAY)
-        OS << "preinit_array";
-      else if (Type == MCSectionELF::SHT_NOBITS)
-        OS << "nobits";
-      else if (Type == MCSectionELF::SHT_PROGBITS)
-        OS << "progbits";
-    
-      if (getKind().isMergeable1ByteCString()) {
-        OS << ",1";
-      } else if (getKind().isMergeable2ByteCString()) {
-        OS << ",2";
-      } else if (getKind().isMergeable4ByteCString() || 
-                 getKind().isMergeableConst4()) {
-        OS << ",4";
-      } else if (getKind().isMergeableConst8()) {
-        OS << ",8";
-      } else if (getKind().isMergeableConst16()) {
-        OS << ",16";
-      }
+  if (ShouldPrintSectionType(Type)) {
+    OS << ',';
+ 
+    // If comment string is '@', e.g. as on ARM - use '%' instead
+    if (MAI.getCommentString()[0] == '@')
+      OS << '%';
+    else
+      OS << '@';
+  
+    if (Type == MCSectionELF::SHT_INIT_ARRAY)
+      OS << "init_array";
+    else if (Type == MCSectionELF::SHT_FINI_ARRAY)
+      OS << "fini_array";
+    else if (Type == MCSectionELF::SHT_PREINIT_ARRAY)
+      OS << "preinit_array";
+    else if (Type == MCSectionELF::SHT_NOBITS)
+      OS << "nobits";
+    else if (Type == MCSectionELF::SHT_PROGBITS)
+      OS << "progbits";
+  
+    if (getKind().isMergeable1ByteCString()) {
+      OS << ",1";
+    } else if (getKind().isMergeable2ByteCString()) {
+      OS << ",2";
+    } else if (getKind().isMergeable4ByteCString() || 
+               getKind().isMergeableConst4()) {
+      OS << ",4";
+    } else if (getKind().isMergeableConst8()) {
+      OS << ",8";
+    } else if (getKind().isMergeableConst16()) {
+      OS << ",16";
     }
   }
   
@@ -129,7 +126,7 @@ void MCSectionELF::PrintSwitchToSection(const TargetAsmInfo &TAI,
 // header index.
 bool MCSectionELF::HasCommonSymbols() const {
   
-  if (strncmp(SectionName.c_str(), ".gnu.linkonce.", 14) == 0)
+  if (StringRef(SectionName).startswith(".gnu.linkonce."))
     return true;
 
   return false;

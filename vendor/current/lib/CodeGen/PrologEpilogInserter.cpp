@@ -19,19 +19,24 @@
 //
 //===----------------------------------------------------------------------===//
 
+#define DEBUG_TYPE "pei"
 #include "PrologEpilogInserter.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetFrameInfo.h"
 #include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/ADT/IndexedMap.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/STLExtras.h"
 #include <climits>
 
@@ -39,8 +44,11 @@ using namespace llvm;
 
 char PEI::ID = 0;
 
-static RegisterPass<PEI>
-X("prologepilog", "Prologue/Epilogue Insertion");
+INITIALIZE_PASS(PEI, "prologepilog",
+                "Prologue/Epilogue Insertion", false, false);
+
+STATISTIC(NumVirtualFrameRegs, "Number of virtual frame regs encountered");
+STATISTIC(NumScavengedRegs, "Number of frame index regs scavenged");
 
 /// createPrologEpilogCodeInserter - This function returns a pass that inserts
 /// prolog and epilog code, and eliminates abstract frame references.
@@ -54,14 +62,11 @@ bool PEI::runOnMachineFunction(MachineFunction &Fn) {
   const Function* F = Fn.getFunction();
   const TargetRegisterInfo *TRI = Fn.getTarget().getRegisterInfo();
   RS = TRI->requiresRegisterScavenging(Fn) ? new RegScavenger() : NULL;
+  FrameIndexVirtualScavenging = TRI->requiresFrameIndexScavenging(Fn);
 
-  // Get MachineModuleInfo so that we can track the construction of the
-  // frame.
-  if (MachineModuleInfo *MMI = getAnalysisIfAvailable<MachineModuleInfo>())
-    Fn.getFrameInfo()->setMachineModuleInfo(MMI);
-
-  // Calculate the MaxCallFrameSize and HasCalls variables for the function's
-  // frame information. Also eliminates call frame pseudo instructions.
+  // Calculate the MaxCallFrameSize and AdjustsStack variables for the
+  // function's frame information. Also eliminates call frame pseudo
+  // instructions.
   calculateCallsInformation(Fn);
 
   // Allow the target machine to make some adjustments to the function
@@ -73,10 +78,10 @@ bool PEI::runOnMachineFunction(MachineFunction &Fn) {
   calculateCalleeSavedRegisters(Fn);
 
   // Determine placement of CSR spill/restore code:
-  //  - with shrink wrapping, place spills and restores to tightly
+  //  - With shrink wrapping, place spills and restores to tightly
   //    enclose regions in the Machine CFG of the function where
-  //    they are used. Without shrink wrapping
-  //  - default (no shrink wrapping), place all spills in the
+  //    they are used.
+  //  - Without shink wrapping (default), place all spills in the
   //    entry block, all restores in return blocks.
   placeCSRSpillsAndRestores(Fn);
 
@@ -93,8 +98,8 @@ bool PEI::runOnMachineFunction(MachineFunction &Fn) {
 
   // Add prolog and epilog code to the function.  This function is required
   // to align the stack frame as necessary for any stack variables or
-  // called functions.  Because of this, calculateCalleeSavedRegisters
-  // must be called before this function in order to set the HasCalls
+  // called functions.  Because of this, calculateCalleeSavedRegisters()
+  // must be called before this function in order to set the AdjustsStack
   // and MaxCallFrameSize variables.
   if (!F->hasFnAttr(Attribute::Naked))
     insertPrologEpilogCode(Fn);
@@ -103,6 +108,12 @@ bool PEI::runOnMachineFunction(MachineFunction &Fn) {
   // and actual offsets.
   //
   replaceFrameIndices(Fn);
+
+  // If register scavenging is needed, as we've enabled doing it as a
+  // post-pass, scavenge the virtual registers that frame index elimiation
+  // inserted.
+  if (TRI->requiresRegisterScavenging(Fn) && FrameIndexVirtualScavenging)
+    scavengeFrameVirtualRegs(Fn);
 
   delete RS;
   clearAllSets();
@@ -122,14 +133,15 @@ void PEI::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 #endif
 
-/// calculateCallsInformation - Calculate the MaxCallFrameSize and HasCalls
+/// calculateCallsInformation - Calculate the MaxCallFrameSize and AdjustsStack
 /// variables for the function's frame information and eliminate call frame
 /// pseudo instructions.
 void PEI::calculateCallsInformation(MachineFunction &Fn) {
   const TargetRegisterInfo *RegInfo = Fn.getTarget().getRegisterInfo();
+  MachineFrameInfo *MFI = Fn.getFrameInfo();
 
   unsigned MaxCallFrameSize = 0;
-  bool HasCalls = false;
+  bool AdjustsStack = MFI->adjustsStack();
 
   // Get the function call frame set-up and tear-down instruction opcode
   int FrameSetupOpcode   = RegInfo->getCallFrameSetupOpcode();
@@ -149,26 +161,26 @@ void PEI::calculateCallsInformation(MachineFunction &Fn) {
                " instructions should have a single immediate argument!");
         unsigned Size = I->getOperand(0).getImm();
         if (Size > MaxCallFrameSize) MaxCallFrameSize = Size;
-        HasCalls = true;
+        AdjustsStack = true;
         FrameSDOps.push_back(I);
-      } else if (I->getOpcode() == TargetInstrInfo::INLINEASM) {
-        // An InlineAsm might be a call; assume it is to get the stack frame
-        // aligned correctly for calls.
-        HasCalls = true;
+      } else if (I->isInlineAsm()) {
+        // Some inline asm's need a stack frame, as indicated by operand 1.
+        if (I->getOperand(1).getImm())
+          AdjustsStack = true;
       }
 
-  MachineFrameInfo *FFI = Fn.getFrameInfo();
-  FFI->setHasCalls(HasCalls);
-  FFI->setMaxCallFrameSize(MaxCallFrameSize);
+  MFI->setAdjustsStack(AdjustsStack);
+  MFI->setMaxCallFrameSize(MaxCallFrameSize);
 
   for (std::vector<MachineBasicBlock::iterator>::iterator
          i = FrameSDOps.begin(), e = FrameSDOps.end(); i != e; ++i) {
     MachineBasicBlock::iterator I = *i;
 
     // If call frames are not being included as part of the stack frame, and
-    // there is no dynamic allocation (therefore referencing frame slots off
-    // sp), leave the pseudo ops alone. We'll eliminate them later.
-    if (RegInfo->hasReservedCallFrame(Fn) || RegInfo->hasFP(Fn))
+    // the target doesn't indicate otherwise, remove the call frame pseudos
+    // here. The sub/add sp instruction pairs are still inserted, but we don't
+    // need to track the SP adjustment for frame index elimination.
+    if (RegInfo->canSimplifyCallFramePseudos(Fn))
       RegInfo->eliminateCallFramePseudoInstr(Fn, *I->getParent(), I);
   }
 }
@@ -179,7 +191,7 @@ void PEI::calculateCallsInformation(MachineFunction &Fn) {
 void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
   const TargetRegisterInfo *RegInfo = Fn.getTarget().getRegisterInfo();
   const TargetFrameInfo *TFI = Fn.getTarget().getFrameInfo();
-  MachineFrameInfo *FFI = Fn.getFrameInfo();
+  MachineFrameInfo *MFI = Fn.getFrameInfo();
 
   // Get the callee saved register list...
   const unsigned *CSRegs = RegInfo->getCalleeSavedRegs(&Fn);
@@ -192,22 +204,21 @@ void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
   if (CSRegs == 0 || CSRegs[0] == 0)
     return;
 
-  // Figure out which *callee saved* registers are modified by the current
-  // function, thus needing to be saved and restored in the prolog/epilog.
-  const TargetRegisterClass * const *CSRegClasses =
-    RegInfo->getCalleeSavedRegClasses(&Fn);
+  // In Naked functions we aren't going to save any registers.
+  if (Fn.getFunction()->hasFnAttr(Attribute::Naked))
+    return;
 
   std::vector<CalleeSavedInfo> CSI;
   for (unsigned i = 0; CSRegs[i]; ++i) {
     unsigned Reg = CSRegs[i];
     if (Fn.getRegInfo().isPhysRegUsed(Reg)) {
       // If the reg is modified, save it!
-      CSI.push_back(CalleeSavedInfo(Reg, CSRegClasses[i]));
+      CSI.push_back(CalleeSavedInfo(Reg));
     } else {
       for (const unsigned *AliasSet = RegInfo->getAliasSet(Reg);
            *AliasSet; ++AliasSet) {  // Check alias registers too.
         if (Fn.getRegInfo().isPhysRegUsed(*AliasSet)) {
-          CSI.push_back(CalleeSavedInfo(Reg, CSRegClasses[i]));
+          CSI.push_back(CalleeSavedInfo(Reg));
           break;
         }
       }
@@ -218,7 +229,7 @@ void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
     return;   // Early exit if no callee saved registers are modified!
 
   unsigned NumFixedSpillSlots;
-  const std::pair<unsigned,int> *FixedSpillSlots =
+  const TargetFrameInfo::SpillSlot *FixedSpillSlots =
     TFI->getCalleeSavedSpillSlots(NumFixedSpillSlots);
 
   // Now that we know which registers need to be saved and restored, allocate
@@ -226,7 +237,7 @@ void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
   for (std::vector<CalleeSavedInfo>::iterator
          I = CSI.begin(), E = CSI.end(); I != E; ++I) {
     unsigned Reg = I->getReg();
-    const TargetRegisterClass *RC = I->getRegClass();
+    const TargetRegisterClass *RC = RegInfo->getMinimalPhysRegClass(Reg);
 
     int FrameIdx;
     if (RegInfo->hasReservedSpillSlot(Fn, Reg, FrameIdx)) {
@@ -236,9 +247,9 @@ void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
 
     // Check to see if this physreg must be spilled to a particular stack slot
     // on this target.
-    const std::pair<unsigned,int> *FixedSlot = FixedSpillSlots;
+    const TargetFrameInfo::SpillSlot *FixedSlot = FixedSpillSlots;
     while (FixedSlot != FixedSpillSlots+NumFixedSpillSlots &&
-           FixedSlot->first != Reg)
+           FixedSlot->Reg != Reg)
       ++FixedSlot;
 
     if (FixedSlot == FixedSpillSlots + NumFixedSpillSlots) {
@@ -250,18 +261,18 @@ void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
       // the TargetRegisterClass if the stack alignment is smaller. Use the
       // min.
       Align = std::min(Align, StackAlign);
-      FrameIdx = FFI->CreateStackObject(RC->getSize(), Align);
+      FrameIdx = MFI->CreateStackObject(RC->getSize(), Align, true);
       if ((unsigned)FrameIdx < MinCSFrameIndex) MinCSFrameIndex = FrameIdx;
       if ((unsigned)FrameIdx > MaxCSFrameIndex) MaxCSFrameIndex = FrameIdx;
     } else {
       // Spill it to the stack where we must.
-      FrameIdx = FFI->CreateFixedObject(RC->getSize(), FixedSlot->second);
+      FrameIdx = MFI->CreateFixedObject(RC->getSize(), FixedSlot->Offset, true);
     }
 
     I->setFrameIdx(FrameIdx);
   }
 
-  FFI->setCalleeSavedInfo(CSI);
+  MFI->setCalleeSavedInfo(CSI);
 }
 
 /// insertCSRSpillsAndRestores - Insert spill and restore code for
@@ -269,30 +280,33 @@ void PEI::calculateCalleeSavedRegisters(MachineFunction &Fn) {
 ///
 void PEI::insertCSRSpillsAndRestores(MachineFunction &Fn) {
   // Get callee saved register information.
-  MachineFrameInfo *FFI = Fn.getFrameInfo();
-  const std::vector<CalleeSavedInfo> &CSI = FFI->getCalleeSavedInfo();
+  MachineFrameInfo *MFI = Fn.getFrameInfo();
+  const std::vector<CalleeSavedInfo> &CSI = MFI->getCalleeSavedInfo();
 
-  FFI->setCalleeSavedInfoValid(true);
+  MFI->setCalleeSavedInfoValid(true);
 
   // Early exit if no callee saved registers are modified!
   if (CSI.empty())
     return;
 
   const TargetInstrInfo &TII = *Fn.getTarget().getInstrInfo();
+  const TargetRegisterInfo *TRI = Fn.getTarget().getRegisterInfo();
   MachineBasicBlock::iterator I;
 
   if (! ShrinkWrapThisFunction) {
     // Spill using target interface.
     I = EntryBlock->begin();
-    if (!TII.spillCalleeSavedRegisters(*EntryBlock, I, CSI)) {
+    if (!TII.spillCalleeSavedRegisters(*EntryBlock, I, CSI, TRI)) {
       for (unsigned i = 0, e = CSI.size(); i != e; ++i) {
         // Add the callee-saved register as live-in.
         // It's killed at the spill.
         EntryBlock->addLiveIn(CSI[i].getReg());
 
         // Insert the spill to the stack frame.
-        TII.storeRegToStackSlot(*EntryBlock, I, CSI[i].getReg(), true,
-                                CSI[i].getFrameIdx(), CSI[i].getRegClass());
+        unsigned Reg = CSI[i].getReg();
+        const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+        TII.storeRegToStackSlot(*EntryBlock, I, Reg, true,
+                                CSI[i].getFrameIdx(), RC, TRI);
       }
     }
 
@@ -314,11 +328,13 @@ void PEI::insertCSRSpillsAndRestores(MachineFunction &Fn) {
 
       // Restore all registers immediately before the return and any
       // terminators that preceed it.
-      if (!TII.restoreCalleeSavedRegisters(*MBB, I, CSI)) {
+      if (!TII.restoreCalleeSavedRegisters(*MBB, I, CSI, TRI)) {
         for (unsigned i = 0, e = CSI.size(); i != e; ++i) {
-          TII.loadRegFromStackSlot(*MBB, I, CSI[i].getReg(),
+          unsigned Reg = CSI[i].getReg();
+          const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+          TII.loadRegFromStackSlot(*MBB, I, Reg,
                                    CSI[i].getFrameIdx(),
-                                   CSI[i].getRegClass());
+                                   RC, TRI);
           assert(I != MBB->begin() &&
                  "loadRegFromStackSlot didn't insert any code!");
           // Insert in reverse order.  loadRegFromStackSlot can insert
@@ -362,10 +378,12 @@ void PEI::insertCSRSpillsAndRestores(MachineFunction &Fn) {
       MBB->addLiveIn(blockCSI[i].getReg());
 
       // Insert the spill to the stack frame.
-      TII.storeRegToStackSlot(*MBB, I, blockCSI[i].getReg(),
+      unsigned Reg = blockCSI[i].getReg();
+      const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+      TII.storeRegToStackSlot(*MBB, I, Reg,
                               true,
                               blockCSI[i].getFrameIdx(),
-                              blockCSI[i].getRegClass());
+                              RC, TRI);
     }
   }
 
@@ -411,9 +429,11 @@ void PEI::insertCSRSpillsAndRestores(MachineFunction &Fn) {
     // Restore all registers immediately before the return and any
     // terminators that preceed it.
     for (unsigned i = 0, e = blockCSI.size(); i != e; ++i) {
-      TII.loadRegFromStackSlot(*MBB, I, blockCSI[i].getReg(),
+      unsigned Reg = blockCSI[i].getReg();
+      const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+      TII.loadRegFromStackSlot(*MBB, I, Reg,
                                blockCSI[i].getFrameIdx(),
-                               blockCSI[i].getRegClass());
+                               RC, TRI);
       assert(I != MBB->begin() &&
              "loadRegFromStackSlot didn't insert any code!");
       // Insert in reverse order.  loadRegFromStackSlot can insert
@@ -430,15 +450,14 @@ void PEI::insertCSRSpillsAndRestores(MachineFunction &Fn) {
 
 /// AdjustStackOffset - Helper function used to adjust the stack frame offset.
 static inline void
-AdjustStackOffset(MachineFrameInfo *FFI, int FrameIdx,
+AdjustStackOffset(MachineFrameInfo *MFI, int FrameIdx,
                   bool StackGrowsDown, int64_t &Offset,
                   unsigned &MaxAlign) {
-  // If stack grows down, we need to add size of find the lowest address of the
-  // object.
+  // If the stack grows down, add the object size to find the lowest address.
   if (StackGrowsDown)
-    Offset += FFI->getObjectSize(FrameIdx);
+    Offset += MFI->getObjectSize(FrameIdx);
 
-  unsigned Align = FFI->getObjectAlignment(FrameIdx);
+  unsigned Align = MFI->getObjectAlignment(FrameIdx);
 
   // If the alignment of this object is greater than that of the stack, then
   // increase the stack alignment to match.
@@ -448,10 +467,12 @@ AdjustStackOffset(MachineFrameInfo *FFI, int FrameIdx,
   Offset = (Offset + Align - 1) / Align * Align;
 
   if (StackGrowsDown) {
-    FFI->setObjectOffset(FrameIdx, -Offset); // Set the computed offset
+    DEBUG(dbgs() << "alloc FI(" << FrameIdx << ") at SP[" << -Offset << "]\n");
+    MFI->setObjectOffset(FrameIdx, -Offset); // Set the computed offset
   } else {
-    FFI->setObjectOffset(FrameIdx, Offset);
-    Offset += FFI->getObjectSize(FrameIdx);
+    DEBUG(dbgs() << "alloc FI(" << FrameIdx << ") at SP[" << Offset << "]\n");
+    MFI->setObjectOffset(FrameIdx, Offset);
+    Offset += MFI->getObjectSize(FrameIdx);
   }
 }
 
@@ -465,35 +486,34 @@ void PEI::calculateFrameObjectOffsets(MachineFunction &Fn) {
     TFI.getStackGrowthDirection() == TargetFrameInfo::StackGrowsDown;
 
   // Loop over all of the stack objects, assigning sequential addresses...
-  MachineFrameInfo *FFI = Fn.getFrameInfo();
-
-  unsigned MaxAlign = FFI->getMaxAlignment();
+  MachineFrameInfo *MFI = Fn.getFrameInfo();
 
   // Start at the beginning of the local area.
   // The Offset is the distance from the stack top in the direction
   // of stack growth -- so it's always nonnegative.
-  int64_t Offset = TFI.getOffsetOfLocalArea();
+  int LocalAreaOffset = TFI.getOffsetOfLocalArea();
   if (StackGrowsDown)
-    Offset = -Offset;
-  assert(Offset >= 0
+    LocalAreaOffset = -LocalAreaOffset;
+  assert(LocalAreaOffset >= 0
          && "Local area offset should be in direction of stack growth");
+  int64_t Offset = LocalAreaOffset;
 
   // If there are fixed sized objects that are preallocated in the local area,
   // non-fixed objects can't be allocated right at the start of local area.
   // We currently don't support filling in holes in between fixed sized
   // objects, so we adjust 'Offset' to point to the end of last fixed sized
   // preallocated object.
-  for (int i = FFI->getObjectIndexBegin(); i != 0; ++i) {
+  for (int i = MFI->getObjectIndexBegin(); i != 0; ++i) {
     int64_t FixedOff;
     if (StackGrowsDown) {
       // The maximum distance from the stack pointer is at lower address of
       // the object -- which is given by offset. For down growing stack
       // the offset is negative, so we negate the offset to get the distance.
-      FixedOff = -FFI->getObjectOffset(i);
+      FixedOff = -MFI->getObjectOffset(i);
     } else {
       // The maximum distance from the start pointer is at the upper
       // address of the object.
-      FixedOff = FFI->getObjectOffset(i) + FFI->getObjectSize(i);
+      FixedOff = MFI->getObjectOffset(i) + MFI->getObjectSize(i);
     }
     if (FixedOff > Offset) Offset = FixedOff;
   }
@@ -502,100 +522,150 @@ void PEI::calculateFrameObjectOffsets(MachineFunction &Fn) {
   // callee saved registers.
   if (StackGrowsDown) {
     for (unsigned i = MinCSFrameIndex; i <= MaxCSFrameIndex; ++i) {
-      // If stack grows down, we need to add size of find the lowest
+      // If the stack grows down, we need to add the size to find the lowest
       // address of the object.
-      Offset += FFI->getObjectSize(i);
+      Offset += MFI->getObjectSize(i);
 
-      unsigned Align = FFI->getObjectAlignment(i);
-      // If the alignment of this object is greater than that of the stack,
-      // then increase the stack alignment to match.
-      MaxAlign = std::max(MaxAlign, Align);
+      unsigned Align = MFI->getObjectAlignment(i);
       // Adjust to alignment boundary
       Offset = (Offset+Align-1)/Align*Align;
 
-      FFI->setObjectOffset(i, -Offset);        // Set the computed offset
+      MFI->setObjectOffset(i, -Offset);        // Set the computed offset
     }
   } else {
     int MaxCSFI = MaxCSFrameIndex, MinCSFI = MinCSFrameIndex;
     for (int i = MaxCSFI; i >= MinCSFI ; --i) {
-      unsigned Align = FFI->getObjectAlignment(i);
-      // If the alignment of this object is greater than that of the stack,
-      // then increase the stack alignment to match.
-      MaxAlign = std::max(MaxAlign, Align);
+      unsigned Align = MFI->getObjectAlignment(i);
       // Adjust to alignment boundary
       Offset = (Offset+Align-1)/Align*Align;
 
-      FFI->setObjectOffset(i, Offset);
-      Offset += FFI->getObjectSize(i);
+      MFI->setObjectOffset(i, Offset);
+      Offset += MFI->getObjectSize(i);
     }
   }
+
+  unsigned MaxAlign = MFI->getMaxAlignment();
 
   // Make sure the special register scavenging spill slot is closest to the
   // frame pointer if a frame pointer is required.
   const TargetRegisterInfo *RegInfo = Fn.getTarget().getRegisterInfo();
-  if (RS && RegInfo->hasFP(Fn)) {
+  if (RS && RegInfo->hasFP(Fn) && !RegInfo->needsStackRealignment(Fn)) {
     int SFI = RS->getScavengingFrameIndex();
     if (SFI >= 0)
-      AdjustStackOffset(FFI, SFI, StackGrowsDown, Offset, MaxAlign);
+      AdjustStackOffset(MFI, SFI, StackGrowsDown, Offset, MaxAlign);
+  }
+
+  // FIXME: Once this is working, then enable flag will change to a target
+  // check for whether the frame is large enough to want to use virtual
+  // frame index registers. Functions which don't want/need this optimization
+  // will continue to use the existing code path.
+  if (MFI->getUseLocalStackAllocationBlock()) {
+    unsigned Align = MFI->getLocalFrameMaxAlign();
+
+    // Adjust to alignment boundary.
+    Offset = (Offset + Align - 1) / Align * Align;
+
+    DEBUG(dbgs() << "Local frame base offset: " << Offset << "\n");
+
+    // Resolve offsets for objects in the local block.
+    for (unsigned i = 0, e = MFI->getLocalFrameObjectCount(); i != e; ++i) {
+      std::pair<int, int64_t> Entry = MFI->getLocalFrameObjectMap(i);
+      int64_t FIOffset = (StackGrowsDown ? -Offset : Offset) + Entry.second;
+      DEBUG(dbgs() << "alloc FI(" << Entry.first << ") at SP[" <<
+            FIOffset << "]\n");
+      MFI->setObjectOffset(Entry.first, FIOffset);
+    }
+    // Allocate the local block
+    Offset += MFI->getLocalFrameSize();
+
+    MaxAlign = std::max(Align, MaxAlign);
   }
 
   // Make sure that the stack protector comes before the local variables on the
   // stack.
-  if (FFI->getStackProtectorIndex() >= 0)
-    AdjustStackOffset(FFI, FFI->getStackProtectorIndex(), StackGrowsDown,
+  SmallSet<int, 16> LargeStackObjs;
+  if (MFI->getStackProtectorIndex() >= 0) {
+    AdjustStackOffset(MFI, MFI->getStackProtectorIndex(), StackGrowsDown,
                       Offset, MaxAlign);
+
+    // Assign large stack objects first.
+    for (unsigned i = 0, e = MFI->getObjectIndexEnd(); i != e; ++i) {
+      if (MFI->isObjectPreAllocated(i) &&
+          MFI->getUseLocalStackAllocationBlock())
+        continue;
+      if (i >= MinCSFrameIndex && i <= MaxCSFrameIndex)
+        continue;
+      if (RS && (int)i == RS->getScavengingFrameIndex())
+        continue;
+      if (MFI->isDeadObjectIndex(i))
+        continue;
+      if (MFI->getStackProtectorIndex() == (int)i)
+        continue;
+      if (!MFI->MayNeedStackProtector(i))
+        continue;
+
+      AdjustStackOffset(MFI, i, StackGrowsDown, Offset, MaxAlign);
+      LargeStackObjs.insert(i);
+    }
+  }
 
   // Then assign frame offsets to stack objects that are not used to spill
   // callee saved registers.
-  for (unsigned i = 0, e = FFI->getObjectIndexEnd(); i != e; ++i) {
+  for (unsigned i = 0, e = MFI->getObjectIndexEnd(); i != e; ++i) {
+    if (MFI->isObjectPreAllocated(i) &&
+        MFI->getUseLocalStackAllocationBlock())
+      continue;
     if (i >= MinCSFrameIndex && i <= MaxCSFrameIndex)
       continue;
     if (RS && (int)i == RS->getScavengingFrameIndex())
       continue;
-    if (FFI->isDeadObjectIndex(i))
+    if (MFI->isDeadObjectIndex(i))
       continue;
-    if (FFI->getStackProtectorIndex() == (int)i)
+    if (MFI->getStackProtectorIndex() == (int)i)
+      continue;
+    if (LargeStackObjs.count(i))
       continue;
 
-    AdjustStackOffset(FFI, i, StackGrowsDown, Offset, MaxAlign);
+    AdjustStackOffset(MFI, i, StackGrowsDown, Offset, MaxAlign);
   }
 
   // Make sure the special register scavenging spill slot is closest to the
   // stack pointer.
-  if (RS && !RegInfo->hasFP(Fn)) {
+  if (RS && (!RegInfo->hasFP(Fn) || RegInfo->needsStackRealignment(Fn))) {
     int SFI = RS->getScavengingFrameIndex();
     if (SFI >= 0)
-      AdjustStackOffset(FFI, SFI, StackGrowsDown, Offset, MaxAlign);
+      AdjustStackOffset(MFI, SFI, StackGrowsDown, Offset, MaxAlign);
   }
 
-  // Round up the size to a multiple of the alignment, but only if there are
-  // calls or alloca's in the function.  This ensures that any calls to
-  // subroutines have their stack frames suitable aligned.
-  // Also do this if we need runtime alignment of the stack.  In this case
-  // offsets will be relative to SP not FP; round up the stack size so this
-  // works.
-  if (!RegInfo->targetHandlesStackFrameRounding() &&
-      (FFI->hasCalls() || FFI->hasVarSizedObjects() ||
-       (RegInfo->needsStackRealignment(Fn) &&
-        FFI->getObjectIndexEnd() != 0))) {
+  if (!RegInfo->targetHandlesStackFrameRounding()) {
     // If we have reserved argument space for call sites in the function
     // immediately on entry to the current function, count it as part of the
     // overall stack size.
-    if (RegInfo->hasReservedCallFrame(Fn))
-      Offset += FFI->getMaxCallFrameSize();
+    if (MFI->adjustsStack() && RegInfo->hasReservedCallFrame(Fn))
+      Offset += MFI->getMaxCallFrameSize();
 
-    unsigned AlignMask = std::max(TFI.getStackAlignment(),MaxAlign) - 1;
+    // Round up the size to a multiple of the alignment.  If the function has
+    // any calls or alloca's, align to the target's StackAlignment value to
+    // ensure that the callee's frame or the alloca data is suitably aligned;
+    // otherwise, for leaf functions, align to the TransientStackAlignment
+    // value.
+    unsigned StackAlign;
+    if (MFI->adjustsStack() || MFI->hasVarSizedObjects() ||
+        (RegInfo->needsStackRealignment(Fn) && MFI->getObjectIndexEnd() != 0))
+      StackAlign = TFI.getStackAlignment();
+    else
+      StackAlign = TFI.getTransientStackAlignment();
+
+    // If the frame pointer is eliminated, all frame offsets will be relative to
+    // SP not FP. Align to MaxAlign so this works.
+    StackAlign = std::max(StackAlign, MaxAlign);
+    unsigned AlignMask = StackAlign - 1;
     Offset = (Offset + AlignMask) & ~uint64_t(AlignMask);
   }
 
   // Update frame info to pretend that this is part of the stack...
-  FFI->setStackSize(Offset+TFI.getOffsetOfLocalArea());
-
-  // Remember the required stack alignment in case targets need it to perform
-  // dynamic stack alignment.
-  FFI->setMaxAlignment(MaxAlign);
+  MFI->setStackSize(Offset - LocalAreaOffset);
 }
-
 
 /// insertPrologEpilogCode - Scan the function for modified callee saved
 /// registers, insert spill code for these callee saved registers, then add
@@ -615,7 +685,6 @@ void PEI::insertPrologEpilogCode(MachineFunction &Fn) {
   }
 }
 
-
 /// replaceFrameIndices - Replace all MO_FrameIndex operands with physical
 /// register references and actual offsets.
 ///
@@ -633,18 +702,20 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
 
   for (MachineFunction::iterator BB = Fn.begin(),
          E = Fn.end(); BB != E; ++BB) {
+#ifndef NDEBUG
+    int SPAdjCount = 0; // frame setup / destroy count.
+#endif
     int SPAdj = 0;  // SP offset due to call frame setup / destroy.
-    if (RS) RS->enterBasicBlock(BB);
+    if (RS && !FrameIndexVirtualScavenging) RS->enterBasicBlock(BB);
 
     for (MachineBasicBlock::iterator I = BB->begin(); I != BB->end(); ) {
-      if (I->getOpcode() == TargetInstrInfo::DECLARE) {
-        // Ignore it.
-        ++I;
-        continue;
-      }
 
       if (I->getOpcode() == FrameSetupOpcode ||
           I->getOpcode() == FrameDestroyOpcode) {
+#ifndef NDEBUG
+        // Track whether we see even pairs of them
+        SPAdjCount += I->getOpcode() == FrameSetupOpcode ? 1 : -1;
+#endif
         // Remember how much SP has been adjusted to create the call
         // frame.
         int Size = I->getOperand(0).getImm();
@@ -663,7 +734,7 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
         if (PrevI == BB->end())
           I = BB->begin();     // The replaced instr was the first in the block.
         else
-          I = next(PrevI);
+          I = llvm::next(PrevI);
         continue;
       }
 
@@ -684,8 +755,8 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
           // If this instruction has a FrameIndex operand, we need to
           // use that target machine register info object to eliminate
           // it.
-
-          TRI.eliminateFrameIndex(MI, SPAdj, RS);
+            TRI.eliminateFrameIndex(MI, SPAdj,
+                                    FrameIndexVirtualScavenging ?  NULL : RS);
 
           // Reset the iterator if we were at the beginning of the BB.
           if (AtBeginning) {
@@ -700,10 +771,71 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
       if (DoIncr && I != BB->end()) ++I;
 
       // Update register states.
-      if (RS && MI) RS->forward(MI);
+      if (RS && !FrameIndexVirtualScavenging && MI) RS->forward(MI);
     }
 
-    assert(SPAdj == 0 && "Unbalanced call frame setup / destroy pairs?");
+    // If we have evenly matched pairs of frame setup / destroy instructions,
+    // make sure the adjustments come out to zero. If we don't have matched
+    // pairs, we can't be sure the missing bit isn't in another basic block
+    // due to a custom inserter playing tricks, so just asserting SPAdj==0
+    // isn't sufficient. See tMOVCC on Thumb1, for example.
+    assert((SPAdjCount || SPAdj == 0) &&
+           "Unbalanced call frame setup / destroy pairs?");
   }
 }
 
+/// scavengeFrameVirtualRegs - Replace all frame index virtual registers
+/// with physical registers. Use the register scavenger to find an
+/// appropriate register to use.
+void PEI::scavengeFrameVirtualRegs(MachineFunction &Fn) {
+  // Run through the instructions and find any virtual registers.
+  for (MachineFunction::iterator BB = Fn.begin(),
+       E = Fn.end(); BB != E; ++BB) {
+    RS->enterBasicBlock(BB);
+
+    unsigned VirtReg = 0;
+    unsigned ScratchReg = 0;
+    int SPAdj = 0;
+
+    // The instruction stream may change in the loop, so check BB->end()
+    // directly.
+    for (MachineBasicBlock::iterator I = BB->begin(); I != BB->end(); ) {
+      MachineInstr *MI = I;
+      bool DoIncr = true;
+      for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+        if (MI->getOperand(i).isReg()) {
+          MachineOperand &MO = MI->getOperand(i);
+          unsigned Reg = MO.getReg();
+          if (Reg == 0)
+            continue;
+          if (!TargetRegisterInfo::isVirtualRegister(Reg))
+            continue;
+
+          ++NumVirtualFrameRegs;
+
+          // Have we already allocated a scratch register for this virtual?
+          if (Reg != VirtReg) {
+            // When we first encounter a new virtual register, it
+            // must be a definition.
+            assert(MI->getOperand(i).isDef() &&
+                   "frame index virtual missing def!");
+            // Scavenge a new scratch register
+            VirtReg = Reg;
+            const TargetRegisterClass *RC = Fn.getRegInfo().getRegClass(Reg);
+            ScratchReg = RS->scavengeRegister(RC, I, SPAdj);
+            ++NumScavengedRegs;
+          }
+          // replace this reference to the virtual register with the
+          // scratch register.
+          assert (ScratchReg && "Missing scratch register!");
+          MI->getOperand(i).setReg(ScratchReg);
+
+        }
+      }
+      if (DoIncr) {
+        RS->forward(I);
+        ++I;
+      }
+    }
+  }
+}

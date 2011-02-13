@@ -1,10 +1,10 @@
-; RUN: llvm-as < %s | llc -mtriple=armv7-apple-darwin10 -mattr=+vfp3
+; RUN: llc < %s -mtriple=armv7-apple-darwin10 -mattr=+vfp3
 
 @a = external global double		; <double*> [#uses=1]
 
 declare double @llvm.exp.f64(double) nounwind readonly
 
-define arm_apcscc void @findratio(double* nocapture %res1, double* nocapture %res2) nounwind {
+define void @findratio(double* nocapture %res1, double* nocapture %res2) nounwind {
 entry:
 	br label %bb
 

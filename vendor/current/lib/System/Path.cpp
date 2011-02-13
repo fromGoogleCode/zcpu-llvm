@@ -13,7 +13,6 @@
 
 #include "llvm/System/Path.h"
 #include "llvm/Config/config.h"
-#include "llvm/Support/ErrorHandling.h"
 #include <cassert>
 #include <cstring>
 #include <ostream>
@@ -29,17 +28,8 @@ bool Path::operator==(const Path &that) const {
   return path == that.path;
 }
 
-bool Path::operator!=(const Path &that) const {
-  return path != that.path;
-}
-
 bool Path::operator<(const Path& that) const {
   return path < that.path;
-}
-
-std::ostream& llvm::operator<<(std::ostream &strm, const sys::Path &aPath) {
-  strm << aPath.toString();
-  return strm;
 }
 
 Path
@@ -71,7 +61,7 @@ sys::IdentifyFileType(const char *magic, unsigned length) {
         if (memcmp(magic,"!<arch>\n",8) == 0)
           return Archive_FileType;
       break;
-      
+
     case '\177':
       if (magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
         if (length >= 18 && magic[17] == 0)
@@ -86,11 +76,11 @@ sys::IdentifyFileType(const char *magic, unsigned length) {
       break;
 
     case 0xCA:
-      if (magic[1] == char(0xFE) && magic[2] == char(0xBA) && 
+      if (magic[1] == char(0xFE) && magic[2] == char(0xBA) &&
           magic[3] == char(0xBE)) {
-        // This is complicated by an overlap with Java class files. 
+        // This is complicated by an overlap with Java class files.
         // See the Mach-O section in /usr/share/file/magic for details.
-        if (length >= 8 && magic[7] < 43) 
+        if (length >= 8 && magic[7] < 43)
           // FIXME: Universal Binary of any type.
           return Mach_O_DynamicallyLinkedSharedLib_FileType;
       }
@@ -99,18 +89,18 @@ sys::IdentifyFileType(const char *magic, unsigned length) {
     case 0xFE:
     case 0xCE: {
       uint16_t type = 0;
-      if (magic[0] == char(0xFE) && magic[1] == char(0xED) && 
+      if (magic[0] == char(0xFE) && magic[1] == char(0xED) &&
           magic[2] == char(0xFA) && magic[3] == char(0xCE)) {
         /* Native endian */
         if (length >= 16) type = magic[14] << 8 | magic[15];
-      } else if (magic[0] == char(0xCE) && magic[1] == char(0xFA) && 
+      } else if (magic[0] == char(0xCE) && magic[1] == char(0xFA) &&
                  magic[2] == char(0xED) && magic[3] == char(0xFE)) {
         /* Reverse endian */
         if (length >= 14) type = magic[13] << 8 | magic[12];
       }
       switch (type) {
-        default: break;      
-        case 1: return Mach_O_Object_FileType; 
+        default: break;
+        case 1: return Mach_O_Object_FileType;
         case 2: return Mach_O_Executable_FileType;
         case 3: return Mach_O_FixedVirtualMemorySharedLib_FileType;
         case 4: return Mach_O_Core_FileType;
@@ -146,26 +136,23 @@ sys::IdentifyFileType(const char *magic, unsigned length) {
 
 bool
 Path::isArchive() const {
-  if (canRead())
-    return hasMagicNumber("!<arch>\012");
-  return false;
+  return hasMagicNumber("!<arch>\012");
 }
 
 bool
 Path::isDynamicLibrary() const {
-  if (canRead()) {
-    std::string Magic;
-    if (getMagicNumber(Magic, 64))
-      switch (IdentifyFileType(Magic.c_str(),
-                               static_cast<unsigned>(Magic.length()))) {
-        default: return false;
-        case Mach_O_FixedVirtualMemorySharedLib_FileType:
-        case Mach_O_DynamicallyLinkedSharedLib_FileType:
-        case Mach_O_DynamicallyLinkedSharedLibStub_FileType:
-        case ELF_SharedObject_FileType:
-        case COFF_FileType:  return true;
-      }
-  }
+  std::string Magic;
+  if (getMagicNumber(Magic, 64))
+    switch (IdentifyFileType(Magic.c_str(),
+                             static_cast<unsigned>(Magic.length()))) {
+      default: return false;
+      case Mach_O_FixedVirtualMemorySharedLib_FileType:
+      case Mach_O_DynamicallyLinkedSharedLib_FileType:
+      case Mach_O_DynamicallyLinkedSharedLibStub_FileType:
+      case ELF_SharedObject_FileType:
+      case COFF_FileType:  return true;
+    }
+
   return false;
 }
 
@@ -186,7 +173,7 @@ Path::FindLibrary(std::string& name) {
   return sys::Path();
 }
 
-std::string Path::GetDLLSuffix() {
+StringRef Path::GetDLLSuffix() {
   return LTDL_SHLIB_EXT;
 }
 
@@ -201,7 +188,7 @@ Path::isBitcodeFile() const {
   return FT == Bitcode_FileType;
 }
 
-bool Path::hasMagicNumber(const std::string &Magic) const {
+bool Path::hasMagicNumber(StringRef Magic) const {
   std::string actualMagic;
   if (getMagicNumber(actualMagic, static_cast<unsigned>(Magic.size())))
     return Magic == actualMagic;
@@ -227,42 +214,43 @@ static void getPathList(const char*path, std::vector<Path>& Paths) {
         Paths.push_back(tmpPath);
 }
 
-static std::string getDirnameCharSep(const std::string& path, char Sep) {
-  
+static StringRef getDirnameCharSep(StringRef path, const char *Sep) {
+  assert(Sep[0] != '\0' && Sep[1] == '\0' &&
+         "Sep must be a 1-character string literal.");
   if (path.empty())
     return ".";
-  
+
   // If the path is all slashes, return a single slash.
   // Otherwise, remove all trailing slashes.
-  
+
   signed pos = static_cast<signed>(path.size()) - 1;
-  
-  while (pos >= 0 && path[pos] == Sep)
+
+  while (pos >= 0 && path[pos] == Sep[0])
     --pos;
-  
+
   if (pos < 0)
-    return path[0] == Sep ? std::string(1, Sep) : std::string(".");
-  
+    return path[0] == Sep[0] ? Sep : ".";
+
   // Any slashes left?
   signed i = 0;
-  
-  while (i < pos && path[i] != Sep)
+
+  while (i < pos && path[i] != Sep[0])
     ++i;
-  
+
   if (i == pos) // No slashes?  Return "."
     return ".";
-  
-  // There is at least one slash left.  Remove all trailing non-slashes.  
-  while (pos >= 0 && path[pos] != Sep)
+
+  // There is at least one slash left.  Remove all trailing non-slashes.
+  while (pos >= 0 && path[pos] != Sep[0])
     --pos;
-  
+
   // Remove any trailing slashes.
-  while (pos >= 0 && path[pos] == Sep)
+  while (pos >= 0 && path[pos] == Sep[0])
     --pos;
-  
+
   if (pos < 0)
-    return path[0] == Sep ? std::string(1, Sep) : std::string(".");
-  
+    return path[0] == Sep[0] ? Sep : ".";
+
   return path.substr(0, pos+1);
 }
 

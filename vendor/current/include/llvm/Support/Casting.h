@@ -50,9 +50,11 @@ template<typename From> struct simplify_type<const From> {
 //  if (isa<Type*>(myVal)) { ... }
 //
 template <typename To, typename From>
-inline bool isa_impl(const From &Val) {
-  return To::classof(&Val);
-}
+struct isa_impl {
+  static inline bool doit(const From &Val) {
+    return To::classof(&Val);
+  }
+};
 
 template<typename To, typename From, typename SimpleType>
 struct isa_impl_wrap {
@@ -68,7 +70,7 @@ template<typename To, typename FromTy>
 struct isa_impl_wrap<To, const FromTy, const FromTy> {
   // When From == SimpleType, we are as simple as we are going to get.
   static bool doit(const FromTy &Val) {
-    return isa_impl<To,FromTy>(Val);
+    return isa_impl<To,FromTy>::doit(Val);
   }
 };
 
@@ -180,8 +182,9 @@ template<class To, class From, class SimpleFrom> struct cast_convert_val {
 template<class To, class FromTy> struct cast_convert_val<To,FromTy,FromTy> {
   // This _is_ a simple type, just cast it.
   static typename cast_retty<To, FromTy>::ret_type doit(const FromTy &Val) {
-    return reinterpret_cast<typename cast_retty<To, FromTy>::ret_type>(
-                         const_cast<FromTy&>(Val));
+    typename cast_retty<To, FromTy>::ret_type Res2
+     = (typename cast_retty<To, FromTy>::ret_type)const_cast<FromTy&>(Val);
+    return Res2;
   }
 };
 
@@ -232,71 +235,6 @@ template <class X, class Y>
 inline typename cast_retty<X, Y>::ret_type dyn_cast_or_null(const Y &Val) {
   return (Val && isa<X>(Val)) ? cast<X, Y>(Val) : 0;
 }
-
-
-#ifdef DEBUG_CAST_OPERATORS
-#include "llvm/Support/Streams.h"
-
-struct bar {
-  bar() {}
-private:
-  bar(const bar &);
-};
-struct foo {
-  void ext() const;
-  /*  static bool classof(const bar *X) {
-    cerr << "Classof: " << X << "\n";
-    return true;
-    }*/
-};
-
-template <> inline bool isa_impl<foo,bar>(const bar &Val) {
-  cerr << "Classof: " << &Val << "\n";
-  return true;
-}
-
-
-bar *fub();
-void test(bar &B1, const bar *B2) {
-  // test various configurations of const
-  const bar &B3 = B1;
-  const bar *const B4 = B2;
-
-  // test isa
-  if (!isa<foo>(B1)) return;
-  if (!isa<foo>(B2)) return;
-  if (!isa<foo>(B3)) return;
-  if (!isa<foo>(B4)) return;
-
-  // test cast
-  foo &F1 = cast<foo>(B1);
-  const foo *F3 = cast<foo>(B2);
-  const foo *F4 = cast<foo>(B2);
-  const foo &F8 = cast<foo>(B3);
-  const foo *F9 = cast<foo>(B4);
-  foo *F10 = cast<foo>(fub());
-
-  // test cast_or_null
-  const foo *F11 = cast_or_null<foo>(B2);
-  const foo *F12 = cast_or_null<foo>(B2);
-  const foo *F13 = cast_or_null<foo>(B4);
-  const foo *F14 = cast_or_null<foo>(fub());  // Shouldn't print.
-
-  // These lines are errors...
-  //foo *F20 = cast<foo>(B2);  // Yields const foo*
-  //foo &F21 = cast<foo>(B3);  // Yields const foo&
-  //foo *F22 = cast<foo>(B4);  // Yields const foo*
-  //foo &F23 = cast_or_null<foo>(B1);
-  //const foo &F24 = cast_or_null<foo>(B3);
-}
-
-bar *fub() { return 0; }
-void main() {
-  bar B;
-  test(B, &B);
-}
-
-#endif
 
 } // End llvm namespace
 

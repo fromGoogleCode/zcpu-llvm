@@ -21,17 +21,19 @@ namespace llvm {
 
 class MSP430TargetMachine;
 
-namespace MSP430 {
-  // MSP430 specific condition code.
-  enum CondCode {
-    COND_E  = 0,  // aka COND_Z
-    COND_NE = 1,  // aka COND_NZ
-    COND_HS = 2,  // aka COND_C
-    COND_LO = 3,  // aka COND_NC
-    COND_GE = 4,
-    COND_L  = 5,
+/// MSP430II - This namespace holds all of the target specific flags that
+/// instruction info tracks.
+///
+namespace MSP430II {
+  enum {
+    SizeShift   = 2,
+    SizeMask    = 7 << SizeShift,
 
-    COND_INVALID
+    SizeUnknown = 0 << SizeShift,
+    SizeSpecial = 1 << SizeShift,
+    Size2Bytes  = 2 << SizeShift,
+    Size4Bytes  = 3 << SizeShift,
+    Size6Bytes  = 4 << SizeShift
   };
 }
 
@@ -47,35 +49,47 @@ public:
   ///
   virtual const TargetRegisterInfo &getRegisterInfo() const { return RI; }
 
-  bool copyRegToReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-                    unsigned DestReg, unsigned SrcReg,
-                    const TargetRegisterClass *DestRC,
-                    const TargetRegisterClass *SrcRC) const;
-
-  bool isMoveInstr(const MachineInstr& MI,
-                   unsigned &SrcReg, unsigned &DstReg,
-                   unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
+  void copyPhysReg(MachineBasicBlock &MBB,
+                   MachineBasicBlock::iterator I, DebugLoc DL,
+                   unsigned DestReg, unsigned SrcReg,
+                   bool KillSrc) const;
 
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MI,
                                    unsigned SrcReg, bool isKill,
                                    int FrameIndex,
-                                   const TargetRegisterClass *RC) const;
+                                   const TargetRegisterClass *RC,
+                                   const TargetRegisterInfo *TRI) const;
   virtual void loadRegFromStackSlot(MachineBasicBlock &MBB,
                                     MachineBasicBlock::iterator MI,
                                     unsigned DestReg, int FrameIdx,
-                                    const TargetRegisterClass *RC) const;
+                                    const TargetRegisterClass *RC,
+                                    const TargetRegisterInfo *TRI) const;
 
   virtual bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                          MachineBasicBlock::iterator MI,
-                                 const std::vector<CalleeSavedInfo> &CSI) const;
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                         const TargetRegisterInfo *TRI) const;
   virtual bool restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
                                            MachineBasicBlock::iterator MI,
-                                 const std::vector<CalleeSavedInfo> &CSI) const;
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                           const TargetRegisterInfo *TRI) const;
 
-  virtual unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
-                                MachineBasicBlock *FBB,
-                             const SmallVectorImpl<MachineOperand> &Cond) const;
+  unsigned GetInstSizeInBytes(const MachineInstr *MI) const;
+
+  // Branch folding goodness
+  bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const;
+  bool isUnpredicatedTerminator(const MachineInstr *MI) const;
+  bool AnalyzeBranch(MachineBasicBlock &MBB,
+                     MachineBasicBlock *&TBB, MachineBasicBlock *&FBB,
+                     SmallVectorImpl<MachineOperand> &Cond,
+                     bool AllowModify) const;
+
+  unsigned RemoveBranch(MachineBasicBlock &MBB) const;
+  unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
+                        MachineBasicBlock *FBB,
+                        const SmallVectorImpl<MachineOperand> &Cond,
+                        DebugLoc DL) const;
 
 };
 

@@ -26,8 +26,9 @@
 #define LLVM_USE_H
 
 #include "llvm/Support/Casting.h"
-#include "llvm/ADT/iterator.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include <cstddef>
+#include <iterator>
 
 namespace llvm {
 
@@ -158,8 +159,9 @@ template<> struct simplify_type<const Use> {
 
 
 template<typename UserTy>  // UserTy == 'User' or 'const User'
-class value_use_iterator : public forward_iterator<UserTy*, ptrdiff_t> {
-  typedef forward_iterator<UserTy*, ptrdiff_t> super;
+class value_use_iterator : public std::iterator<std::forward_iterator_tag,
+                                                UserTy*, ptrdiff_t> {
+  typedef std::iterator<std::forward_iterator_tag, UserTy*, ptrdiff_t> super;
   typedef value_use_iterator<UserTy> _Self;
 
   Use *U;
@@ -208,30 +210,6 @@ public:
   unsigned getOperandNo() const;
 };
 
-
-template<> struct simplify_type<value_use_iterator<User> > {
-  typedef User* SimpleType;
-  
-  static SimpleType getSimplifiedValue(const value_use_iterator<User> &Val) {
-    return *Val;
-  }
-};
-
-template<> struct simplify_type<const value_use_iterator<User> >
- : public simplify_type<value_use_iterator<User> > {};
-
-template<> struct simplify_type<value_use_iterator<const User> > {
-  typedef const User* SimpleType;
-  
-  static SimpleType getSimplifiedValue(const 
-                                       value_use_iterator<const User> &Val) {
-    return *Val;
-  }
-};
-
-template<> struct simplify_type<const value_use_iterator<const User> >
-  : public simplify_type<value_use_iterator<const User> > {};
- 
 } // End llvm namespace
 
 #endif

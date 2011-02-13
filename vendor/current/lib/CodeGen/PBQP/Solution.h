@@ -1,4 +1,4 @@
-//===-- Solution.h ------- PBQP Solution -----------------------*- C++ --*-===//
+//===-- Solution.h ------- PBQP Solution ------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,81 +7,82 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Annotated PBQP Graph class. This class is used internally by the PBQP solver
-// to cache information to speed up reduction.
+// PBQP Solution class.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_CODEGEN_PBQP_SOLUTION_H
 #define LLVM_CODEGEN_PBQP_SOLUTION_H
 
-#include "PBQPMath.h"
+#include "Math.h"
+#include "Graph.h"
+
+#include <map>
 
 namespace PBQP {
 
-class Solution {
+  /// \brief Represents a solution to a PBQP problem.
+  ///
+  /// To get the selection for each node in the problem use the getSelection method.
+  class Solution {
+  private:
 
-  friend class SolverImplementation;
+    typedef std::map<Graph::NodeItr, unsigned, NodeItrComparator> SelectionsMap;
+    SelectionsMap selections;
 
-private:
+    unsigned r0Reductions, r1Reductions, r2Reductions, rNReductions;
 
-  std::vector<unsigned> selections;
-  PBQPNum solutionCost;
-  bool provedOptimal;
-  unsigned r0Reductions, r1Reductions,
-           r2Reductions, rNReductions;
+  public:
 
-public:
+    /// \brief Number of nodes for which selections have been made.
+    /// @return Number of nodes for which selections have been made.
+    unsigned numNodes() const { return selections.size(); }
 
-  Solution() :
-    solutionCost(0.0), provedOptimal(false),
-    r0Reductions(0), r1Reductions(0), r2Reductions(0), rNReductions(0) {}
+    /// \brief Records a reduction via the R0 rule. Should be called from the
+    ///        solver only.
+    void recordR0() { ++r0Reductions; }
 
-  Solution(unsigned length, bool assumeOptimal) :
-    selections(length), solutionCost(0.0), provedOptimal(assumeOptimal),
-    r0Reductions(0), r1Reductions(0), r2Reductions(0), rNReductions(0) {}
+    /// \brief Returns the number of R0 reductions applied to solve the problem.
+    unsigned numR0Reductions() const { return r0Reductions; }
 
-  void setProvedOptimal(bool provedOptimal) {
-    this->provedOptimal = provedOptimal;
-  }
+    /// \brief Records a reduction via the R1 rule. Should be called from the
+    ///        solver only.
+    void recordR1() { ++r1Reductions; }
 
-  void setSelection(unsigned nodeID, unsigned selection) {
-    selections[nodeID] = selection;
-  }
+    /// \brief Returns the number of R1 reductions applied to solve the problem.
+    unsigned numR1Reductions() const { return r1Reductions; }
 
-  void setSolutionCost(PBQPNum solutionCost) {
-    this->solutionCost = solutionCost;
-  }
+    /// \brief Records a reduction via the R2 rule. Should be called from the
+    ///        solver only.
+    void recordR2() { ++r2Reductions; }
 
-  void incR0Reductions() { ++r0Reductions; }
-  void incR1Reductions() { ++r1Reductions; }
-  void incR2Reductions() { ++r2Reductions; }
-  void incRNReductions() { ++rNReductions; }
+    /// \brief Returns the number of R2 reductions applied to solve the problem.
+    unsigned numR2Reductions() const { return r2Reductions; }
 
-  unsigned numNodes() const { return selections.size(); }
+    /// \brief Records a reduction via the RN rule. Should be called from the
+    ///        solver only.
+    void recordRN() { ++ rNReductions; }
 
-  unsigned getSelection(unsigned nodeID) const {
-    return selections[nodeID];
-  }
+    /// \brief Returns the number of RN reductions applied to solve the problem.
+    unsigned numRNReductions() const { return rNReductions; }
 
-  PBQPNum getCost() const { return solutionCost; }
+    /// \brief Set the selection for a given node.
+    /// @param nItr Node iterator.
+    /// @param selection Selection for nItr.
+    void setSelection(Graph::NodeItr nItr, unsigned selection) {
+      selections[nItr] = selection;
+    }
 
-  bool isProvedOptimal() const { return provedOptimal; }
+    /// \brief Get a node's selection.
+    /// @param nItr Node iterator.
+    /// @return The selection for nItr;
+    unsigned getSelection(Graph::NodeItr nItr) const {
+      SelectionsMap::const_iterator sItr = selections.find(nItr);
+      assert(sItr != selections.end() && "No selection for node.");
+      return sItr->second;
+    }
 
-  unsigned getR0Reductions() const { return r0Reductions; }
-  unsigned getR1Reductions() const { return r1Reductions; }
-  unsigned getR2Reductions() const { return r2Reductions; }
-  unsigned getRNReductions() const { return rNReductions; }
-
-  bool operator==(const Solution &other) const {
-    return (selections == other.selections);
-  }
-
-  bool operator!=(const Solution &other) const {
-    return !(*this == other);
-  }
-
-};
+  };
 
 }
 

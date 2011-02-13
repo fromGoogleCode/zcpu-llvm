@@ -23,7 +23,7 @@
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetELFWriterInfo.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetAsmInfo.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -37,7 +37,7 @@ namespace llvm {
 /// startFunction - This callback is invoked when a new machine function is
 /// about to be emitted.
 void ELFCodeEmitter::startFunction(MachineFunction &MF) {
-  DEBUG(errs() << "processing function: "
+  DEBUG(dbgs() << "processing function: "
         << MF.getFunction()->getName() << "\n");
 
   // Get the ELF Section that this function belongs in.
@@ -62,7 +62,8 @@ void ELFCodeEmitter::startFunction(MachineFunction &MF) {
   // They need to be emitted before the function because in some targets
   // the later may reference JT or CP entry address.
   emitConstantPool(MF.getConstantPool());
-  emitJumpTables(MF.getJumpTableInfo());
+  if (MF.getJumpTableInfo())
+    emitJumpTables(MF.getJumpTableInfo());
 }
 
 /// finishFunction - This callback is invoked after the function is completely
@@ -70,7 +71,7 @@ void ELFCodeEmitter::startFunction(MachineFunction &MF) {
 bool ELFCodeEmitter::finishFunction(MachineFunction &MF) {
   // Add a symbol to represent the function.
   const Function *F = MF.getFunction();
-  ELFSym *FnSym = ELFSym::getGV(F, EW.getGlobalELFBinding(F), ELFSym::STT_FUNC,
+  ELFSym *FnSym = ELFSym::getGV(F, EW.getGlobalELFBinding(F), ELF::STT_FUNC,
                                 EW.getGlobalELFVisibility(F));
   FnSym->SectionIdx = ES->SectionIdx;
   FnSym->Size = ES->getCurrentPCOffset()-FnStartOff;
@@ -84,12 +85,12 @@ bool ELFCodeEmitter::finishFunction(MachineFunction &MF) {
 
   // Patch up Jump Table Section relocations to use the real MBBs offsets
   // now that the MBB label offsets inside the function are known.
-  if (!MF.getJumpTableInfo()->isEmpty()) {
+  if (MF.getJumpTableInfo()) {
     ELFSection &JTSection = EW.getJumpTableSection();
     for (std::vector<MachineRelocation>::iterator MRI = JTRelocations.begin(),
          MRE = JTRelocations.end(); MRI != MRE; ++MRI) {
       MachineRelocation &MR = *MRI;
-      unsigned MBBOffset = getMachineBasicBlockAddress(MR.getBasicBlock());
+      uintptr_t MBBOffset = getMachineBasicBlockAddress(MR.getBasicBlock());
       MR.setResultPointer((void*)MBBOffset);
       MR.setConstantVal(ES->SectionIdx);
       JTSection.addRelocation(MR);
@@ -172,7 +173,7 @@ void ELFCodeEmitter::emitJumpTables(MachineJumpTableInfo *MJTI) {
          "PIC codegen not yet handled for elf jump tables!");
 
   const TargetELFWriterInfo *TEW = TM.getELFWriterInfo();
-  unsigned EntrySize = MJTI->getEntrySize();
+  unsigned EntrySize = 4; //MJTI->getEntrySize();
 
   // Get the ELF Section to emit the jump table
   ELFSection &JTSection = EW.getJumpTableSection();

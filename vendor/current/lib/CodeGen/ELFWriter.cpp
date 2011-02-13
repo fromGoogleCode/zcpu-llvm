@@ -37,51 +37,40 @@
 #include "llvm/PassManager.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/CodeGen/BinaryObject.h"
-#include "llvm/CodeGen/FileWriters.h"
 #include "llvm/CodeGen/MachineCodeEmitter.h"
 #include "llvm/CodeGen/ObjectCodeEmitter.h"
 #include "llvm/CodeGen/MachineCodeEmitter.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCSectionELF.h"
-#include "llvm/Target/TargetAsmInfo.h"
+#include "llvm/MC/MCAsmInfo.h"
+#include "llvm/Target/Mangler.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetELFWriterInfo.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Support/Mangler.h"
-#include "llvm/Support/Streams.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/SmallString.h"
 using namespace llvm;
 
 char ELFWriter::ID = 0;
-
-/// AddELFWriter - Add the ELF writer to the function pass manager
-ObjectCodeEmitter *llvm::AddELFWriter(PassManagerBase &PM,
-                                      raw_ostream &O,
-                                      TargetMachine &TM) {
-  ELFWriter *EW = new ELFWriter(O, TM);
-  PM.add(EW);
-  return EW->getObjectCodeEmitter();
-}
 
 //===----------------------------------------------------------------------===//
 //                          ELFWriter Implementation
 //===----------------------------------------------------------------------===//
 
 ELFWriter::ELFWriter(raw_ostream &o, TargetMachine &tm)
-  : MachineFunctionPass(&ID), O(o), TM(tm),
-    OutContext(*new MCContext()),
+  : MachineFunctionPass(ID), O(o), TM(tm),
+    OutContext(*new MCContext(*TM.getMCAsmInfo())),
     TLOF(TM.getTargetLowering()->getObjFileLowering()),
     is64Bit(TM.getTargetData()->getPointerSizeInBits() == 64),
     isLittleEndian(TM.getTargetData()->isLittleEndian()),
     ElfHdr(isLittleEndian, is64Bit) {
 
-  TAI = TM.getTargetAsmInfo();
+  MAI = TM.getMCAsmInfo();
   TEW = TM.getELFWriterInfo();
 
   // Create the object code emitter object for this target.
@@ -94,6 +83,24 @@ ELFWriter::ELFWriter(raw_ostream &o, TargetMachine &tm)
 ELFWriter::~ELFWriter() {
   delete ElfCE;
   delete &OutContext;
+
+  while(!SymbolList.empty()) {
+    delete SymbolList.back(); 
+    SymbolList.pop_back();
+  }
+
+  while(!PrivateSyms.empty()) {
+    delete PrivateSyms.back(); 
+    PrivateSyms.pop_back();
+  }
+
+  while(!SectionList.empty()) {
+    delete SectionList.back(); 
+    SectionList.pop_back();
+  }
+
+  // Release the name mangler object.
+  delete Mang; Mang = 0;
 }
 
 // doInitialization - Emit the file header and all of the global variables for
@@ -102,7 +109,7 @@ bool ELFWriter::doInitialization(Module &M) {
   // Initialize TargetLoweringObjectFile.
   const_cast<TargetLoweringObjectFile&>(TLOF).Initialize(OutContext, TM);
   
-  Mang = new Mangler(M);
+  Mang = new Mangler(OutContext, *TM.getTargetData());
 
   // ELF Header
   // ----------
@@ -122,12 +129,12 @@ bool ELFWriter::doInitialization(Module &M) {
 
   ElfHdr.emitByte(TEW->getEIClass()); // e_ident[EI_CLASS]
   ElfHdr.emitByte(TEW->getEIData());  // e_ident[EI_DATA]
-  ElfHdr.emitByte(EV_CURRENT);        // e_ident[EI_VERSION]
+  ElfHdr.emitByte(ELF::EV_CURRENT);   // e_ident[EI_VERSION]
   ElfHdr.emitAlignment(16);           // e_ident[EI_NIDENT-EI_PAD]
 
-  ElfHdr.emitWord16(ET_REL);             // e_type
+  ElfHdr.emitWord16(ELF::ET_REL);        // e_type
   ElfHdr.emitWord16(TEW->getEMachine()); // e_machine = target
-  ElfHdr.emitWord32(EV_CURRENT);         // e_version
+  ElfHdr.emitWord32(ELF::EV_CURRENT);    // e_version
   ElfHdr.emitWord(0);                    // e_entry, no entry point in .o file
   ElfHdr.emitWord(0);                    // e_phoff, no program header for .o
   ELFHdr_e_shoff_Offset = ElfHdr.size();
@@ -201,7 +208,7 @@ ELFSection &ELFWriter::getDtorSection() {
 }
 
 // getTextSection - Get the text section for the specified function
-ELFSection &ELFWriter::getTextSection(Function *F) {
+ELFSection &ELFWriter::getTextSection(const Function *F) {
   const MCSectionELF *Text = 
     (const MCSectionELF *)TLOF.SectionForGlobal(F, Mang, TM);
   return getSection(Text->getSectionName(), Text->getType(), Text->getFlags());
@@ -245,7 +252,7 @@ ELFSection &ELFWriter::getConstantPoolSection(MachineConstantPoolEntry &CPE) {
 // is true if the relocation section contains entries with addends.
 ELFSection &ELFWriter::getRelocSection(ELFSection &S) {
   unsigned SectionType = TEW->hasRelocationAddend() ?
-                ELFSection::SHT_RELA : ELFSection::SHT_REL;
+                ELF::SHT_RELA : ELF::SHT_REL;
 
   std::string SectionName(".rel");
   if (TEW->hasRelocationAddend())
@@ -261,11 +268,11 @@ unsigned ELFWriter::getGlobalELFVisibility(const GlobalValue *GV) {
   default:
     llvm_unreachable("unknown visibility type");
   case GlobalValue::DefaultVisibility:
-    return ELFSym::STV_DEFAULT;
+    return ELF::STV_DEFAULT;
   case GlobalValue::HiddenVisibility:
-    return ELFSym::STV_HIDDEN;
+    return ELF::STV_HIDDEN;
   case GlobalValue::ProtectedVisibility:
-    return ELFSym::STV_PROTECTED;
+    return ELF::STV_PROTECTED;
   }
   return 0;
 }
@@ -273,23 +280,23 @@ unsigned ELFWriter::getGlobalELFVisibility(const GlobalValue *GV) {
 // getGlobalELFBinding - Returns the ELF specific binding type
 unsigned ELFWriter::getGlobalELFBinding(const GlobalValue *GV) {
   if (GV->hasInternalLinkage())
-    return ELFSym::STB_LOCAL;
+    return ELF::STB_LOCAL;
 
   if (GV->isWeakForLinker() && !GV->hasCommonLinkage())
-    return ELFSym::STB_WEAK;
+    return ELF::STB_WEAK;
 
-  return ELFSym::STB_GLOBAL;
+  return ELF::STB_GLOBAL;
 }
 
 // getGlobalELFType - Returns the ELF specific type for a global
 unsigned ELFWriter::getGlobalELFType(const GlobalValue *GV) {
   if (GV->isDeclaration())
-    return ELFSym::STT_NOTYPE;
+    return ELF::STT_NOTYPE;
 
   if (isa<Function>(GV))
-    return ELFSym::STT_FUNC;
+    return ELF::STT_FUNC;
 
-  return ELFSym::STT_OBJECT;
+  return ELF::STT_OBJECT;
 }
 
 // IsELFUndefSym - True if the global value must be marked as a symbol
@@ -357,7 +364,7 @@ void ELFWriter::EmitGlobal(const GlobalValue *GV) {
     GblSym->Size = Size;
 
     if (S->HasCommonSymbols()) { // Symbol must go to a common section
-      GblSym->SectionIdx = ELFSection::SHN_COMMON;
+      GblSym->SectionIdx = ELF::SHN_COMMON;
 
       // A new linkonce section is created for each global in the
       // common section, the default alignment is 1 and the symbol
@@ -440,16 +447,15 @@ void ELFWriter::EmitGlobalConstant(const Constant *CV, ELFSection &GblS) {
     return;
   } else if (const ConstantFP *CFP = dyn_cast<ConstantFP>(CV)) {
     APInt Val = CFP->getValueAPF().bitcastToAPInt();
-    if (CFP->getType() == Type::getDoubleTy(CV->getContext()))
+    if (CFP->getType()->isDoubleTy())
       GblS.emitWord64(Val.getZExtValue());
-    else if (CFP->getType() == Type::getFloatTy(CV->getContext()))
+    else if (CFP->getType()->isFloatTy())
       GblS.emitWord32(Val.getZExtValue());
-    else if (CFP->getType() == Type::getX86_FP80Ty(CV->getContext())) {
-      unsigned PadSize = 
-             TD->getTypeAllocSize(Type::getX86_FP80Ty(CV->getContext()))-
-             TD->getTypeStoreSize(Type::getX86_FP80Ty(CV->getContext()));
+    else if (CFP->getType()->isX86_FP80Ty()) {
+      unsigned PadSize = TD->getTypeAllocSize(CFP->getType())-
+                         TD->getTypeStoreSize(CFP->getType());
       GblS.emitWordFP80(Val.getRawData(), PadSize);
-    } else if (CFP->getType() == Type::getPPC_FP128Ty(CV->getContext()))
+    } else if (CFP->getType()->isPPC_FP128Ty())
       llvm_unreachable("PPC_FP128Ty global emission not implemented");
     return;
   } else if (const ConstantInt *CI = dyn_cast<ConstantInt>(CV)) {
@@ -501,7 +507,7 @@ void ELFWriter::EmitGlobalConstant(const Constant *CV, ELFSection &GblS) {
   std::string msg;
   raw_string_ostream ErrorMsg(msg);
   ErrorMsg << "Constant unimp for type: " << *CV->getType();
-  llvm_report_error(ErrorMsg.str());
+  report_fatal_error(ErrorMsg.str());
 }
 
 // ResolveConstantExpr - Resolve the constant expression until it stop
@@ -566,10 +572,8 @@ CstExprResTy ELFWriter::ResolveConstantExpr(const Constant *CV) {
   }
   }
 
-  std::string msg(CE->getOpcodeName());
-  raw_string_ostream ErrorMsg(msg);
-  ErrorMsg << ": Unsupported ConstantExpr type";
-  llvm_report_error(ErrorMsg.str());
+  report_fatal_error(CE->getOpcodeName() +
+                     StringRef(": Unsupported ConstantExpr type"));
 
   return std::make_pair(CV, 0); // silence warning
 }
@@ -687,10 +691,6 @@ bool ELFWriter::doFinalization(Module &M) {
        I != E; ++I)
     SymbolList.push_back(ELFSym::getExtSym(*I));
 
-  // Emit non-executable stack note
-  if (TAI->getNonexecutableStackDirective())
-    getNonExecStackSection();
-
   // Emit a symbol for each section created until now, skip null section
   for (unsigned i = 1, e = SectionList.size(); i < e; ++i) {
     ELFSection &ES = *SectionList[i];
@@ -715,13 +715,6 @@ bool ELFWriter::doFinalization(Module &M) {
   // Dump the sections and section table to the .o file.
   OutputSectionsAndSectionTable();
 
-  // We are done with the abstract symbols.
-  SymbolList.clear();
-  SectionList.clear();
-  NumSections = 0;
-
-  // Release the name mangler object.
-  delete Mang; Mang = 0;
   return false;
 }
 
@@ -897,9 +890,11 @@ void ELFWriter::EmitStringTable(const std::string &ModuleName) {
     ELFSym &Sym = *(*I);
 
     std::string Name;
-    if (Sym.isGlobalValue())
-      Name.append(Mang->getMangledName(Sym.getGlobalValue()));
-    else if (Sym.isExternalSym())
+    if (Sym.isGlobalValue()) {
+      SmallString<40> NameStr;
+      Mang->getNameWithPrefix(NameStr, Sym.getGlobalValue(), false);
+      Name.append(NameStr.begin(), NameStr.end());
+    } else if (Sym.isExternalSym())
       Name.append(Sym.getExternalSymbol());
     else if (Sym.isFileType())
       Name.append(ModuleName);
@@ -1067,9 +1062,9 @@ void ELFWriter::OutputSectionsAndSectionTable() {
   // Emit all of sections to the file and build the section header table.
   for (ELFSectionIter I=SectionList.begin(), E=SectionList.end(); I != E; ++I) {
     ELFSection &S = *(*I);
-    DOUT << "SectionIdx: " << S.SectionIdx << ", Name: " << S.getName()
-         << ", Size: " << S.Size << ", Offset: " << S.Offset
-         << ", SectionData Size: " << S.size() << "\n";
+    DEBUG(dbgs() << "SectionIdx: " << S.SectionIdx << ", Name: " << S.getName()
+                 << ", Size: " << S.Size << ", Offset: " << S.Offset
+                 << ", SectionData Size: " << S.size() << "\n");
 
     // Align FileOff to whatever the alignment restrictions of the section are.
     if (S.size()) {

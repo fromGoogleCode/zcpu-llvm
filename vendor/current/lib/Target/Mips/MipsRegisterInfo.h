@@ -42,9 +42,6 @@ struct MipsRegisterInfo : public MipsGenRegisterInfo {
   /// Code Generation virtual methods...
   const unsigned *getCalleeSavedRegs(const MachineFunction* MF = 0) const;
 
-  const TargetRegisterClass* const*
-  getCalleeSavedRegClasses(const MachineFunction* MF = 0) const;
-
   BitVector getReservedRegs(const MachineFunction &MF) const;
 
   bool hasFP(const MachineFunction &MF) const;
@@ -64,7 +61,7 @@ struct MipsRegisterInfo : public MipsGenRegisterInfo {
   
   /// Debug information queries.
   unsigned getRARegister() const;
-  unsigned getFrameRegister(MachineFunction &MF) const;
+  unsigned getFrameRegister(const MachineFunction &MF) const;
 
   /// Exception handling queries.
   unsigned getEHExceptionRegister() const;

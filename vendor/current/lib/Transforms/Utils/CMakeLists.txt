@@ -3,27 +3,25 @@ add_llvm_library(LLVMTransformUtils
   BasicBlockUtils.cpp
   BasicInliner.cpp
   BreakCriticalEdges.cpp
+  BuildLibCalls.cpp
   CloneFunction.cpp
   CloneLoop.cpp
   CloneModule.cpp
-  CloneTrace.cpp
   CodeExtractor.cpp
   DemoteRegToStack.cpp
-  InlineCost.cpp
   InlineFunction.cpp
   InstructionNamer.cpp
   LCSSA.cpp
   Local.cpp
   LoopSimplify.cpp
-  LowerAllocations.cpp
+  LoopUnroll.cpp
   LowerInvoke.cpp
   LowerSwitch.cpp
   Mem2Reg.cpp
   PromoteMemoryToRegister.cpp
-  SSI.cpp
+  SSAUpdater.cpp
   SimplifyCFG.cpp
   UnifyFunctionExitNodes.cpp
-  UnrollLoop.cpp
   ValueMapper.cpp
   )
 

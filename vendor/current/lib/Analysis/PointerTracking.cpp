@@ -10,9 +10,11 @@
 // This file implements tracking of pointer bounds.
 //
 //===----------------------------------------------------------------------===//
+
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/Dominators.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/PointerTracking.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
@@ -23,10 +25,10 @@
 #include "llvm/Support/InstIterator.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetData.h"
+using namespace llvm;
 
-namespace llvm {
-char PointerTracking::ID=0;
-PointerTracking::PointerTracking() : FunctionPass(&ID) {}
+char PointerTracking::ID = 0;
+PointerTracking::PointerTracking() : FunctionPass(ID) {}
 
 bool PointerTracking::runOnFunction(Function &F) {
   predCache.clear();
@@ -47,7 +49,7 @@ void PointerTracking::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 
 bool PointerTracking::doInitialization(Module &M) {
-  const Type *PTy = PointerType::getUnqual(Type::getInt8Ty(M.getContext()));
+  const Type *PTy = Type::getInt8PtrTy(M.getContext());
 
   // Find calloc(i64, i64) or calloc(i32, i32).
   callocFunc = M.getFunction("calloc");
@@ -92,9 +94,18 @@ bool PointerTracking::doInitialization(Module &M) {
 const SCEV *PointerTracking::computeAllocationCount(Value *P,
                                                     const Type *&Ty) const {
   Value *V = P->stripPointerCasts();
-  if (AllocationInst *AI = dyn_cast<AllocationInst>(V)) {
+  if (AllocaInst *AI = dyn_cast<AllocaInst>(V)) {
     Value *arraySize = AI->getArraySize();
     Ty = AI->getAllocatedType();
+    // arraySize elements of type Ty.
+    return SE->getSCEV(arraySize);
+  }
+
+  if (CallInst *CI = extractMallocCall(V)) {
+    Value *arraySize = getMallocArraySize(CI, TD);
+    const Type* AllocTy = getMallocAllocatedType(CI);
+    if (!AllocTy || !arraySize) return SE->getCouldNotCompute();
+    Ty = AllocTy;
     // arraySize elements of type Ty.
     return SE->getSCEV(arraySize);
   }
@@ -131,6 +142,55 @@ const SCEV *PointerTracking::computeAllocationCount(Value *P,
   }
 
   return SE->getCouldNotCompute();
+}
+
+Value *PointerTracking::computeAllocationCountValue(Value *P, const Type *&Ty) const 
+{
+  Value *V = P->stripPointerCasts();
+  if (AllocaInst *AI = dyn_cast<AllocaInst>(V)) {
+    Ty = AI->getAllocatedType();
+    // arraySize elements of type Ty.
+    return AI->getArraySize();
+  }
+
+  if (CallInst *CI = extractMallocCall(V)) {
+    Ty = getMallocAllocatedType(CI);
+    if (!Ty)
+      return 0;
+    Value *arraySize = getMallocArraySize(CI, TD);
+    if (!arraySize) {
+      Ty = Type::getInt8Ty(P->getContext());
+      return CI->getArgOperand(0);
+    }
+    // arraySize elements of type Ty.
+    return arraySize;
+  }
+
+  if (GlobalVariable *GV = dyn_cast<GlobalVariable>(V)) {
+    if (GV->hasDefinitiveInitializer()) {
+      Constant *C = GV->getInitializer();
+      if (const ArrayType *ATy = dyn_cast<ArrayType>(C->getType())) {
+        Ty = ATy->getElementType();
+        return ConstantInt::get(Type::getInt32Ty(P->getContext()),
+                               ATy->getNumElements());
+      }
+    }
+    Ty = cast<PointerType>(GV->getType())->getElementType();
+    return ConstantInt::get(Type::getInt32Ty(P->getContext()), 1);
+    //TODO: implement more tracking for globals
+  }
+
+  if (CallInst *CI = dyn_cast<CallInst>(V)) {
+    CallSite CS(CI);
+    Function *F = dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
+    if (F == reallocFunc) {
+      Ty = Type::getInt8Ty(P->getContext());
+      // realloc allocates arg1 bytes.
+      return CS.getArgument(1);
+    }
+  }
+
+  return 0;
 }
 
 // Calculates the number of elements of type Ty allocated for P.
@@ -172,17 +232,17 @@ enum SolverResult PointerTracking::isLoopGuardedBy(const Loop *L,
                                                    Predicate Pred,
                                                    const SCEV *A,
                                                    const SCEV *B) const {
-  if (SE->isLoopGuardedByCond(L, Pred, A, B))
+  if (SE->isLoopEntryGuardedByCond(L, Pred, A, B))
     return AlwaysTrue;
   Pred = ICmpInst::getSwappedPredicate(Pred);
-  if (SE->isLoopGuardedByCond(L, Pred, B, A))
+  if (SE->isLoopEntryGuardedByCond(L, Pred, B, A))
     return AlwaysTrue;
 
   Pred = ICmpInst::getInversePredicate(Pred);
-  if (SE->isLoopGuardedByCond(L, Pred, B, A))
+  if (SE->isLoopEntryGuardedByCond(L, Pred, B, A))
     return AlwaysFalse;
   Pred = ICmpInst::getSwappedPredicate(Pred);
-  if (SE->isLoopGuardedByCond(L, Pred, A, B))
+  if (SE->isLoopEntryGuardedByCond(L, Pred, A, B))
     return AlwaysTrue;
   return Unknown;
 }
@@ -220,7 +280,7 @@ void PointerTracking::print(raw_ostream &OS, const Module* M) const {
   // this should be safe for the same reason its safe for SCEV.
   PointerTracking &PT = *const_cast<PointerTracking*>(this);
   for (inst_iterator I=inst_begin(*FF), E=inst_end(*FF); I != E; ++I) {
-    if (!isa<PointerType>(I->getType()))
+    if (!I->getType()->isPointerTy())
       continue;
     Value *Base;
     const SCEV *Limit, *Offset;
@@ -252,11 +312,5 @@ void PointerTracking::print(raw_ostream &OS, const Module* M) const {
   }
 }
 
-void PointerTracking::print(std::ostream &o, const Module* M) const {
-  raw_os_ostream OS(o);
-  print(OS, M);
-}
-
-static RegisterPass<PointerTracking> X("pointertracking",
-                                       "Track pointer bounds", false, true);
-}
+INITIALIZE_PASS(PointerTracking, "pointertracking",
+                "Track pointer bounds", false, true);

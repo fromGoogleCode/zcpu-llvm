@@ -22,7 +22,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
-
+#include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
 
 SystemZInstrInfo::SystemZInstrInfo(SystemZTargetMachine &tm)
@@ -61,8 +61,9 @@ static inline bool isGVStub(GlobalValue *GV, SystemZTargetMachine &TM) {
 void SystemZInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                           MachineBasicBlock::iterator MI,
                                     unsigned SrcReg, bool isKill, int FrameIdx,
-                                    const TargetRegisterClass *RC) const {
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+                                           const TargetRegisterClass *RC,
+                                           const TargetRegisterInfo *TRI) const {
+  DebugLoc DL;
   if (MI != MBB.end()) DL = MI->getDebugLoc();
 
   unsigned Opc = 0;
@@ -90,8 +91,9 @@ void SystemZInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
 void SystemZInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                            MachineBasicBlock::iterator MI,
                                            unsigned DestReg, int FrameIdx,
-                                           const TargetRegisterClass *RC) const{
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+                                            const TargetRegisterClass *RC,
+                                            const TargetRegisterInfo *TRI) const{
+  DebugLoc DL;
   if (MI != MBB.end()) DL = MI->getDebugLoc();
 
   unsigned Opc = 0;
@@ -115,85 +117,28 @@ void SystemZInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
   addFrameReference(BuildMI(MBB, MI, DL, get(Opc), DestReg), FrameIdx);
 }
 
-bool SystemZInstrInfo::copyRegToReg(MachineBasicBlock &MBB,
-                                    MachineBasicBlock::iterator I,
-                                    unsigned DestReg, unsigned SrcReg,
-                                    const TargetRegisterClass *DestRC,
-                                    const TargetRegisterClass *SrcRC) const {
-  DebugLoc DL = DebugLoc::getUnknownLoc();
-  if (I != MBB.end()) DL = I->getDebugLoc();
+void SystemZInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                   MachineBasicBlock::iterator I, DebugLoc DL,
+                                   unsigned DestReg, unsigned SrcReg,
+                                   bool KillSrc) const {
+  unsigned Opc;
+  if (SystemZ::GR64RegClass.contains(DestReg, SrcReg))
+    Opc = SystemZ::MOV64rr;
+  else if (SystemZ::GR32RegClass.contains(DestReg, SrcReg))
+    Opc = SystemZ::MOV32rr;
+  else if (SystemZ::GR64PRegClass.contains(DestReg, SrcReg))
+    Opc = SystemZ::MOV64rrP;
+  else if (SystemZ::GR128RegClass.contains(DestReg, SrcReg))
+    Opc = SystemZ::MOV128rr;
+  else if (SystemZ::FP32RegClass.contains(DestReg, SrcReg))
+    Opc = SystemZ::FMOV32rr;
+  else if (SystemZ::FP64RegClass.contains(DestReg, SrcReg))
+    Opc = SystemZ::FMOV64rr;
+  else
+    llvm_unreachable("Impossible reg-to-reg copy");
 
-  // Determine if DstRC and SrcRC have a common superclass.
-  const TargetRegisterClass *CommonRC = DestRC;
-  if (DestRC == SrcRC)
-    /* Same regclass for source and dest */;
-  else if (CommonRC->hasSuperClass(SrcRC))
-    CommonRC = SrcRC;
-  else if (!CommonRC->hasSubClass(SrcRC))
-    CommonRC = 0;
-
-  if (CommonRC) {
-    if (CommonRC == &SystemZ::GR64RegClass ||
-        CommonRC == &SystemZ::ADDR64RegClass) {
-      BuildMI(MBB, I, DL, get(SystemZ::MOV64rr), DestReg).addReg(SrcReg);
-    } else if (CommonRC == &SystemZ::GR32RegClass ||
-               CommonRC == &SystemZ::ADDR32RegClass) {
-      BuildMI(MBB, I, DL, get(SystemZ::MOV32rr), DestReg).addReg(SrcReg);
-    } else if (CommonRC == &SystemZ::GR64PRegClass) {
-      BuildMI(MBB, I, DL, get(SystemZ::MOV64rrP), DestReg).addReg(SrcReg);
-    } else if (CommonRC == &SystemZ::GR128RegClass) {
-      BuildMI(MBB, I, DL, get(SystemZ::MOV128rr), DestReg).addReg(SrcReg);
-    } else if (CommonRC == &SystemZ::FP32RegClass) {
-      BuildMI(MBB, I, DL, get(SystemZ::FMOV32rr), DestReg).addReg(SrcReg);
-    } else if (CommonRC == &SystemZ::FP64RegClass) {
-      BuildMI(MBB, I, DL, get(SystemZ::FMOV64rr), DestReg).addReg(SrcReg);
-    } else {
-      return false;
-    }
-
-    return true;
-  }
-
-  if ((SrcRC == &SystemZ::GR64RegClass &&
-       DestRC == &SystemZ::ADDR64RegClass) ||
-      (DestRC == &SystemZ::GR64RegClass &&
-       SrcRC == &SystemZ::ADDR64RegClass)) {
-    BuildMI(MBB, I, DL, get(SystemZ::MOV64rr), DestReg).addReg(SrcReg);
-    return true;
-  } else if ((SrcRC == &SystemZ::GR32RegClass &&
-              DestRC == &SystemZ::ADDR32RegClass) ||
-             (DestRC == &SystemZ::GR32RegClass &&
-              SrcRC == &SystemZ::ADDR32RegClass)) {
-    BuildMI(MBB, I, DL, get(SystemZ::MOV32rr), DestReg).addReg(SrcReg);
-    return true;
-  }
-
-  return false;
-}
-
-bool
-SystemZInstrInfo::isMoveInstr(const MachineInstr& MI,
-                              unsigned &SrcReg, unsigned &DstReg,
-                              unsigned &SrcSubIdx, unsigned &DstSubIdx) const {
-  switch (MI.getOpcode()) {
-  default:
-    return false;
-  case SystemZ::MOV32rr:
-  case SystemZ::MOV64rr:
-  case SystemZ::MOV64rrP:
-  case SystemZ::MOV128rr:
-  case SystemZ::FMOV32rr:
-  case SystemZ::FMOV64rr:
-    assert(MI.getNumOperands() >= 2 &&
-           MI.getOperand(0).isReg() &&
-           MI.getOperand(1).isReg() &&
-           "invalid register-register move instruction");
-    SrcReg = MI.getOperand(1).getReg();
-    DstReg = MI.getOperand(0).getReg();
-    SrcSubIdx = MI.getOperand(1).getSubReg();
-    DstSubIdx = MI.getOperand(0).getSubReg();
-    return true;
-  }
+  BuildMI(MBB, I, DL, get(Opc), DestReg)
+    .addReg(SrcReg, getKillRegState(KillSrc));
 }
 
 unsigned SystemZInstrInfo::isLoadFromStackSlot(const MachineInstr *MI,
@@ -266,38 +211,15 @@ unsigned SystemZInstrInfo::isStoreToStackSlot(const MachineInstr *MI,
   return 0;
 }
 
-bool SystemZInstrInfo::isInvariantLoad(const MachineInstr *MI) const {
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
-    // Loads from constant pools are trivially invariant.
-    if (MO.isCPI())
-      return true;
-
-    if (MO.isGlobal())
-      return isGVStub(MO.getGlobal(), TM);
-
-    // If this is a load from an invariant stack slot, the load is a constant.
-    if (MO.isFI()) {
-      const MachineFrameInfo &MFI =
-        *MI->getParent()->getParent()->getFrameInfo();
-      int Idx = MO.getIndex();
-      return MFI.isFixedObjectIndex(Idx) && MFI.isImmutableObjectIndex(Idx);
-    }
-  }
-
-  // All other instances of these instructions are presumed to have other
-  // issues.
-  return false;
-}
-
 bool
 SystemZInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                            MachineBasicBlock::iterator MI,
-                                const std::vector<CalleeSavedInfo> &CSI) const {
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                          const TargetRegisterInfo *TRI) const {
   if (CSI.empty())
     return false;
 
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+  DebugLoc DL;
   if (MI != MBB.end()) DL = MI->getDebugLoc();
 
   MachineFunction &MF = *MBB.getParent();
@@ -308,8 +230,7 @@ SystemZInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
   unsigned LowReg = 0, HighReg = 0, StartOffset = -1U, EndOffset = 0;
   for (unsigned i = 0, e = CSI.size(); i != e; ++i) {
     unsigned Reg = CSI[i].getReg();
-    const TargetRegisterClass *RegClass = CSI[i].getRegClass();
-    if (RegClass != &SystemZ::FP64RegClass) {
+    if (!SystemZ::FP64RegClass.contains(Reg)) {
       unsigned Offset = RegSpillOffsets[Reg];
       CalleeFrameSize += 8;
       if (StartOffset > Offset) {
@@ -354,10 +275,10 @@ SystemZInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
   // Save FPRs
   for (unsigned i = 0, e = CSI.size(); i != e; ++i) {
     unsigned Reg = CSI[i].getReg();
-    const TargetRegisterClass *RegClass = CSI[i].getRegClass();
-    if (RegClass == &SystemZ::FP64RegClass) {
+    if (SystemZ::FP64RegClass.contains(Reg)) {
       MBB.addLiveIn(Reg);
-      storeRegToStackSlot(MBB, MI, Reg, true, CSI[i].getFrameIdx(), RegClass);
+      storeRegToStackSlot(MBB, MI, Reg, true, CSI[i].getFrameIdx(),
+                          &SystemZ::FP64RegClass, &RI);
     }
   }
 
@@ -367,11 +288,12 @@ SystemZInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
 bool
 SystemZInstrInfo::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
                                              MachineBasicBlock::iterator MI,
-                                const std::vector<CalleeSavedInfo> &CSI) const {
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                          const TargetRegisterInfo *TRI) const {
   if (CSI.empty())
     return false;
 
-  DebugLoc DL = DebugLoc::getUnknownLoc();
+  DebugLoc DL;
   if (MI != MBB.end()) DL = MI->getDebugLoc();
 
   MachineFunction &MF = *MBB.getParent();
@@ -381,9 +303,9 @@ SystemZInstrInfo::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
   // Restore FP registers
   for (unsigned i = 0, e = CSI.size(); i != e; ++i) {
     unsigned Reg = CSI[i].getReg();
-    const TargetRegisterClass *RegClass = CSI[i].getRegClass();
-    if (RegClass == &SystemZ::FP64RegClass)
-      loadRegFromStackSlot(MBB, MI, Reg, CSI[i].getFrameIdx(), RegClass);
+    if (SystemZ::FP64RegClass.contains(Reg))
+      loadRegFromStackSlot(MBB, MI, Reg, CSI[i].getFrameIdx(),
+                           &SystemZ::FP64RegClass, &RI);
   }
 
   // Restore GP registers
@@ -426,18 +348,6 @@ ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const {
   return false;
 }
 
-bool SystemZInstrInfo::BlockHasNoFallThrough(const MachineBasicBlock &MBB)const{
-  if (MBB.empty()) return false;
-
-  switch (MBB.back().getOpcode()) {
-  case SystemZ::RET:   // Return.
-  case SystemZ::JMP:   // Uncond branch.
-  case SystemZ::JMPr:  // Indirect branch.
-    return true;
-  default: return false;
-  }
-}
-
 bool SystemZInstrInfo::isUnpredicatedTerminator(const MachineInstr *MI) const {
   const TargetInstrDesc &TID = MI->getDesc();
   if (!TID.isTerminator()) return false;
@@ -460,6 +370,8 @@ bool SystemZInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
   MachineBasicBlock::iterator I = MBB.end();
   while (I != MBB.begin()) {
     --I;
+    if (I->isDebugValue())
+      continue;
     // Working from the bottom, when we see a non-terminator
     // instruction, we're done.
     if (!isUnpredicatedTerminator(I))
@@ -478,8 +390,8 @@ bool SystemZInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
       }
 
       // If the block has any instructions after a JMP, delete them.
-      while (next(I) != MBB.end())
-        next(I)->eraseFromParent();
+      while (llvm::next(I) != MBB.end())
+        llvm::next(I)->eraseFromParent();
       Cond.clear();
       FBB = 0;
 
@@ -536,6 +448,8 @@ unsigned SystemZInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
 
   while (I != MBB.begin()) {
     --I;
+    if (I->isDebugValue())
+      continue;
     if (I->getOpcode() != SystemZ::JMP &&
         getCondFromBranchOpc(I->getOpcode()) == SystemZCC::INVALID)
       break;
@@ -551,9 +465,8 @@ unsigned SystemZInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
 unsigned
 SystemZInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                                MachineBasicBlock *FBB,
-                            const SmallVectorImpl<MachineOperand> &Cond) const {
-  // FIXME: this should probably have a DebugLoc operand
-  DebugLoc dl = DebugLoc::getUnknownLoc();
+                               const SmallVectorImpl<MachineOperand> &Cond,
+                               DebugLoc DL) const {
   // Shouldn't be a fall through.
   assert(TBB && "InsertBranch must not be told to insert a fallthrough");
   assert((Cond.size() == 1 || Cond.size() == 0) &&
@@ -562,19 +475,19 @@ SystemZInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   if (Cond.empty()) {
     // Unconditional branch?
     assert(!FBB && "Unconditional branch with multiple successors!");
-    BuildMI(&MBB, dl, get(SystemZ::JMP)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(SystemZ::JMP)).addMBB(TBB);
     return 1;
   }
 
   // Conditional branch.
   unsigned Count = 0;
   SystemZCC::CondCodes CC = (SystemZCC::CondCodes)Cond[0].getImm();
-  BuildMI(&MBB, dl, getBrCond(CC)).addMBB(TBB);
+  BuildMI(&MBB, DL, getBrCond(CC)).addMBB(TBB);
   ++Count;
 
   if (FBB) {
     // Two-way Conditional branch. Insert the second branch.
-    BuildMI(&MBB, dl, get(SystemZ::JMP)).addMBB(FBB);
+    BuildMI(&MBB, DL, get(SystemZ::JMP)).addMBB(FBB);
     ++Count;
   }
   return Count;

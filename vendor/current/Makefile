@@ -19,25 +19,33 @@ LEVEL := .
 #
 # When cross-compiling, there are some things (tablegen) that need to
 # be build for the build system first.
+
+# If "RC_ProjectName" exists in the environment, and its value is
+# "llvmCore", then this is an "Apple-style" build; search for
+# "Apple-style" in the comments for more info.  Anything else is a
+# normal build.
+ifneq ($(findstring llvmCore, $(RC_ProjectName)),llvmCore)  # Normal build (not "Apple-style").
+
 ifeq ($(BUILD_DIRS_ONLY),1)
   DIRS := lib/System lib/Support utils
   OPTIONAL_DIRS :=
 else
-  DIRS := lib/System lib/Support utils lib/VMCore lib tools/llvm-config \
-          tools runtime docs
-  OPTIONAL_DIRS := examples projects bindings
+  DIRS := lib/System lib/Support utils lib/VMCore lib tools/llvm-shlib \
+          tools/llvm-config tools runtime docs unittests
+  OPTIONAL_DIRS := projects bindings
+endif
+
+ifeq ($(BUILD_EXAMPLES),1)
+  OPTIONAL_DIRS += examples
 endif
 
 EXTRA_DIST := test unittests llvm.spec include win32 Xcode
 
 include $(LEVEL)/Makefile.config
 
-# llvm-gcc4 doesn't need runtime libs.  llvm-gcc4 is the only supported one.
-# FIXME: Remove runtime entirely once we have an understanding of where
-# libprofile etc should go.
-#ifeq ($(LLVMGCC_MAJVERS),4)
-#  DIRS := $(filter-out runtime, $(DIRS))
-#endif
+ifneq ($(ENABLE_SHARED),1)
+  DIRS := $(filter-out tools/llvm-shlib, $(DIRS))
+endif
 
 ifeq ($(MAKECMDGOALS),libs-only)
   DIRS := $(filter-out tools runtime docs, $(DIRS))
@@ -55,14 +63,24 @@ ifeq ($(MAKECMDGOALS),tools-only)
 endif
 
 ifeq ($(MAKECMDGOALS),install-clang)
-  DIRS := tools/clang/tools/driver tools/clang/tools/clang-cc \
-	tools/clang/lib/Headers tools/clang/docs
+  DIRS := tools/clang/tools/driver tools/clang/lib/Headers \
+          tools/clang/runtime tools/clang/docs \
+          tools/lto
+  OPTIONAL_DIRS :=
+  NO_INSTALL = 1
+endif
+
+ifeq ($(MAKECMDGOALS),install-clang-c)
+  DIRS := tools/clang/tools/driver tools/clang/lib/Headers \
+          tools/clang/tools/libclang tools/clang/tools/c-index-test \
+	  tools/clang/include/clang-c
   OPTIONAL_DIRS :=
   NO_INSTALL = 1
 endif
 
 ifeq ($(MAKECMDGOALS),clang-only)
-  DIRS := $(filter-out tools runtime docs, $(DIRS)) tools/clang
+  DIRS := $(filter-out tools runtime docs unittests, $(DIRS)) \
+          tools/clang tools/lto
   OPTIONAL_DIRS :=
 endif
 
@@ -88,10 +106,24 @@ cross-compile-build-tools:
 	$(Verb) if [ ! -f BuildTools/Makefile ]; then \
           $(MKDIR) BuildTools; \
 	  cd BuildTools ; \
-	  $(PROJ_SRC_DIR)/configure ; \
+	  unset CFLAGS ; \
+	  unset CXXFLAGS ; \
+	  $(PROJ_SRC_DIR)/configure --build=$(BUILD_TRIPLE) \
+		--host=$(BUILD_TRIPLE) --target=$(BUILD_TRIPLE); \
 	  cd .. ; \
 	fi; \
-        ($(MAKE) -C BuildTools BUILD_DIRS_ONLY=1 ) || exit 1;
+	(unset SDKROOT; \
+	 $(MAKE) -C BuildTools \
+	  BUILD_DIRS_ONLY=1 \
+	  UNIVERSAL= \
+	  ENABLE_OPTIMIZED=$(ENABLE_OPTIMIZED) \
+	  ENABLE_PROFILING=$(ENABLE_PROFILING) \
+	  ENABLE_COVERAGE=$(ENABLE_COVERAGE) \
+	  DISABLE_ASSERTIONS=$(DISABLE_ASSERTIONS) \
+	  ENABLE_EXPENSIVE_CHECKS=$(ENABLE_EXPENSIVE_CHECKS) \
+	  CFLAGS= \
+	  CXXFLAGS= \
+	) || exit 1;
 endif
 
 # Include the main makefile machinery.
@@ -117,15 +149,14 @@ debug-opt-prof:
 dist-hook::
 	$(Echo) Eliminating files constructed by configure
 	$(Verb) $(RM) -f \
-	  $(TopDistDir)/include/llvm/ADT/iterator.h  \
 	  $(TopDistDir)/include/llvm/Config/config.h  \
-	  $(TopDistDir)/include/llvm/Support/DataTypes.h  \
-	  $(TopDistDir)/include/llvm/Support/ThreadSupport.h
+	  $(TopDistDir)/include/llvm/System/DataTypes.h
 
 clang-only: all
 tools-only: all
 libs-only: all
 install-clang: install
+install-clang-c: install
 install-libs: install
 
 #------------------------------------------------------------------------
@@ -135,9 +166,11 @@ install-libs: install
 FilesToConfig := \
   include/llvm/Config/config.h \
   include/llvm/Config/Targets.def \
-	include/llvm/Config/AsmPrinters.def \
-  include/llvm/Support/DataTypes.h \
-  include/llvm/ADT/iterator.h
+  include/llvm/Config/AsmPrinters.def \
+  include/llvm/Config/AsmParsers.def \
+  include/llvm/Config/Disassemblers.def \
+  include/llvm/System/DataTypes.h \
+  tools/llvmc/src/Base.td
 FilesToConfigPATH  := $(addprefix $(LLVM_OBJ_ROOT)/,$(FilesToConfig))
 
 all-local:: $(FilesToConfigPATH)
@@ -150,8 +183,8 @@ $(FilesToConfigPATH) : $(LLVM_OBJ_ROOT)/% : $(LLVM_SRC_ROOT)/%.in
 # that it gets executed last.
 ifneq ($(BUILD_DIRS_ONLY),1)
 all::
-	$(Echo) '*****' Completed $(BuildMode)$(AssertMode) Build
-ifeq ($(BuildMode),Debug)
+	$(Echo) '*****' Completed $(BuildMode) Build
+ifneq ($(ENABLE_OPTIMIZED),1)
 	$(Echo) '*****' Note: Debug build can be 10 times slower than an
 	$(Echo) '*****' optimized build. Use 'make ENABLE_OPTIMIZED=1' to
 	$(Echo) '*****' make an optimized build. Alternatively you can
@@ -161,9 +194,6 @@ endif
 
 check-llvm2cpp:
 	$(Verb)$(MAKE) check TESTSUITE=Feature RUNLLVM2CPP=1
-
-check-one:
-	$(Verb)$(MAKE) -C test check-one TESTONE=$(TESTONE)
 
 srpm: $(LLVM_OBJ_ROOT)/llvm.spec
 	rpmbuild -bs $(LLVM_OBJ_ROOT)/llvm.spec
@@ -195,7 +225,7 @@ update:
 	$(SVN) $(SVN-UPDATE-OPTIONS) update $(LLVM_SRC_ROOT)
 	@ $(SVN) status $(LLVM_SRC_ROOT) | $(SUB-SVN-DIRS) | xargs $(SVN) $(SVN-UPDATE-OPTIONS) update
 
-happiness: update all check unittests
+happiness: update all check-all
 
 .PHONY: srpm rpm update happiness
 
@@ -203,3 +233,9 @@ happiness: update all check unittests
 
 .NOTPARALLEL:
 
+else # Building "Apple-style."
+# In an Apple-style build, once configuration is done, lines marked
+# "Apple-style" are removed with sed!  Please don't remove these!
+# Look for the string "Apple-style" in utils/buildit/build_llvm.
+include $(shell find . -name GNUmakefile) # Building "Apple-style."
+endif # Building "Apple-style."

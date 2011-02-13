@@ -13,18 +13,18 @@
 
 #define DEBUG_TYPE "pre-RA-sched"
 #include "ScheduleDAGSDNodes.h"
+#include "llvm/InlineAsm.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
 STATISTIC(NumUnfolds,    "Number of nodes unfolded");
@@ -39,7 +39,7 @@ namespace {
   /// FastPriorityQueue - A degenerate priority queue that considers
   /// all nodes to have the same priority.
   ///
-  struct VISIBILITY_HIDDEN FastPriorityQueue {
+  struct FastPriorityQueue {
     SmallVector<SUnit *, 16> Queue;
 
     bool empty() const { return Queue.empty(); }
@@ -59,7 +59,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 /// ScheduleDAGFast - The actual "fast" list scheduler implementation.
 ///
-class VISIBILITY_HIDDEN ScheduleDAGFast : public ScheduleDAGSDNodes {
+class ScheduleDAGFast : public ScheduleDAGSDNodes {
 private:
   /// AvailableQueue - The priority queue to use for the available SUnits.
   FastPriorityQueue AvailableQueue;
@@ -109,14 +109,14 @@ private:
 
 /// Schedule - Schedule the DAG using list scheduling.
 void ScheduleDAGFast::Schedule() {
-  DOUT << "********** List Scheduling **********\n";
+  DEBUG(dbgs() << "********** List Scheduling **********\n");
 
   NumLiveRegs = 0;
   LiveRegDefs.resize(TRI->getNumRegs(), NULL);  
   LiveRegCycles.resize(TRI->getNumRegs(), 0);
 
   // Build the scheduling graph.
-  BuildSchedGraph();
+  BuildSchedGraph(NULL);
 
   DEBUG(for (unsigned su = 0, e = SUnits.size(); su != e; ++su)
           SUnits[su].dumpAll(this));
@@ -133,17 +133,17 @@ void ScheduleDAGFast::Schedule() {
 /// the AvailableQueue if the count reaches zero. Also update its cycle bound.
 void ScheduleDAGFast::ReleasePred(SUnit *SU, SDep *PredEdge) {
   SUnit *PredSU = PredEdge->getSUnit();
-  --PredSU->NumSuccsLeft;
-  
+
 #ifndef NDEBUG
-  if (PredSU->NumSuccsLeft < 0) {
-    cerr << "*** Scheduling failed! ***\n";
+  if (PredSU->NumSuccsLeft == 0) {
+    dbgs() << "*** Scheduling failed! ***\n";
     PredSU->dump(this);
-    cerr << " has been released too many times!\n";
+    dbgs() << " has been released too many times!\n";
     llvm_unreachable(0);
   }
 #endif
-  
+  --PredSU->NumSuccsLeft;
+
   // If all the node's successors are scheduled, this node is ready
   // to be scheduled. Ignore the special EntrySU node.
   if (PredSU->NumSuccsLeft == 0 && PredSU != &EntrySU) {
@@ -175,7 +175,7 @@ void ScheduleDAGFast::ReleasePredecessors(SUnit *SU, unsigned CurCycle) {
 /// count of its predecessors. If a predecessor pending count is zero, add it to
 /// the Available queue.
 void ScheduleDAGFast::ScheduleNodeBottomUp(SUnit *SU, unsigned CurCycle) {
-  DOUT << "*** Scheduling [" << CurCycle << "]: ";
+  DEBUG(dbgs() << "*** Scheduling [" << CurCycle << "]: ");
   DEBUG(SU->dump(this));
 
   assert(CurCycle >= SU->getHeight() && "Node scheduled below its height!");
@@ -233,7 +233,7 @@ SUnit *ScheduleDAGFast::CopyAndMoveSuccessors(SUnit *SU) {
     if (!TII->unfoldMemoryOperand(*DAG, N, NewNodes))
       return NULL;
 
-    DOUT << "Unfolding SU # " << SU->NodeNum << "\n";
+    DEBUG(dbgs() << "Unfolding SU # " << SU->NodeNum << "\n");
     assert(NewNodes.size() == 2 && "Expected a load folding node!");
 
     N = NewNodes[1];
@@ -343,7 +343,7 @@ SUnit *ScheduleDAGFast::CopyAndMoveSuccessors(SUnit *SU) {
     SU = NewSU;
   }
 
-  DOUT << "Duplicating SU # " << SU->NodeNum << "\n";
+  DEBUG(dbgs() << "Duplicating SU # " << SU->NodeNum << "\n");
   NewSU = Clone(SU);
 
   // New SUnit has the exact same predecessors.
@@ -433,6 +433,30 @@ static EVT getPhysicalRegisterVT(SDNode *N, unsigned Reg,
   return N->getValueType(NumRes);
 }
 
+/// CheckForLiveRegDef - Return true and update live register vector if the
+/// specified register def of the specified SUnit clobbers any "live" registers.
+static bool CheckForLiveRegDef(SUnit *SU, unsigned Reg,
+                               std::vector<SUnit*> &LiveRegDefs,
+                               SmallSet<unsigned, 4> &RegAdded,
+                               SmallVector<unsigned, 4> &LRegs,
+                               const TargetRegisterInfo *TRI) {
+  bool Added = false;
+  if (LiveRegDefs[Reg] && LiveRegDefs[Reg] != SU) {
+    if (RegAdded.insert(Reg)) {
+      LRegs.push_back(Reg);
+      Added = true;
+    }
+  }
+  for (const unsigned *Alias = TRI->getAliasSet(Reg); *Alias; ++Alias)
+    if (LiveRegDefs[*Alias] && LiveRegDefs[*Alias] != SU) {
+      if (RegAdded.insert(*Alias)) {
+        LRegs.push_back(*Alias);
+        Added = true;
+      }
+    }
+  return Added;
+}
+
 /// DelayForLiveRegsBottomUp - Returns true if it is necessary to delay
 /// scheduling of the given node to satisfy live physical register dependencies.
 /// If the specific node is the last one that's available to schedule, do
@@ -447,37 +471,44 @@ bool ScheduleDAGFast::DelayForLiveRegsBottomUp(SUnit *SU,
   for (SUnit::pred_iterator I = SU->Preds.begin(), E = SU->Preds.end();
        I != E; ++I) {
     if (I->isAssignedRegDep()) {
-      unsigned Reg = I->getReg();
-      if (LiveRegDefs[Reg] && LiveRegDefs[Reg] != I->getSUnit()) {
-        if (RegAdded.insert(Reg))
-          LRegs.push_back(Reg);
-      }
-      for (const unsigned *Alias = TRI->getAliasSet(Reg);
-           *Alias; ++Alias)
-        if (LiveRegDefs[*Alias] && LiveRegDefs[*Alias] != I->getSUnit()) {
-          if (RegAdded.insert(*Alias))
-            LRegs.push_back(*Alias);
-        }
+      CheckForLiveRegDef(I->getSUnit(), I->getReg(), LiveRegDefs,
+                         RegAdded, LRegs, TRI);
     }
   }
 
   for (SDNode *Node = SU->getNode(); Node; Node = Node->getFlaggedNode()) {
+    if (Node->getOpcode() == ISD::INLINEASM) {
+      // Inline asm can clobber physical defs.
+      unsigned NumOps = Node->getNumOperands();
+      if (Node->getOperand(NumOps-1).getValueType() == MVT::Flag)
+        --NumOps;  // Ignore the flag operand.
+
+      for (unsigned i = InlineAsm::Op_FirstOperand; i != NumOps;) {
+        unsigned Flags =
+          cast<ConstantSDNode>(Node->getOperand(i))->getZExtValue();
+        unsigned NumVals = InlineAsm::getNumOperandRegisters(Flags);
+
+        ++i; // Skip the ID value.
+        if (InlineAsm::isRegDefKind(Flags) ||
+            InlineAsm::isRegDefEarlyClobberKind(Flags)) {
+          // Check for def of register or earlyclobber register.
+          for (; NumVals; --NumVals, ++i) {
+            unsigned Reg = cast<RegisterSDNode>(Node->getOperand(i))->getReg();
+            if (TargetRegisterInfo::isPhysicalRegister(Reg))
+              CheckForLiveRegDef(SU, Reg, LiveRegDefs, RegAdded, LRegs, TRI);
+          }
+        } else
+          i += NumVals;
+      }
+      continue;
+    }
     if (!Node->isMachineOpcode())
       continue;
     const TargetInstrDesc &TID = TII->get(Node->getMachineOpcode());
     if (!TID.ImplicitDefs)
       continue;
     for (const unsigned *Reg = TID.ImplicitDefs; *Reg; ++Reg) {
-      if (LiveRegDefs[*Reg] && LiveRegDefs[*Reg] != SU) {
-        if (RegAdded.insert(*Reg))
-          LRegs.push_back(*Reg);
-      }
-      for (const unsigned *Alias = TRI->getAliasSet(*Reg);
-           *Alias; ++Alias)
-        if (LiveRegDefs[*Alias] && LiveRegDefs[*Alias] != SU) {
-          if (RegAdded.insert(*Alias))
-            LRegs.push_back(*Alias);
-        }
+      CheckForLiveRegDef(SU, *Reg, LiveRegDefs, RegAdded, LRegs, TRI);
     }
   }
   return !LRegs.empty();
@@ -536,7 +567,7 @@ void ScheduleDAGFast::ListScheduleBottomUp() {
         SUnit *LRDef = LiveRegDefs[Reg];
         EVT VT = getPhysicalRegisterVT(LRDef->getNode(), Reg, TII);
         const TargetRegisterClass *RC =
-          TRI->getPhysicalRegisterRegClass(Reg, VT);
+          TRI->getMinimalPhysRegClass(Reg, VT);
         const TargetRegisterClass *DestRC = TRI->getCrossCopyRegClass(RC);
 
         // If cross copy register class is null, then it must be possible copy
@@ -550,16 +581,16 @@ void ScheduleDAGFast::ListScheduleBottomUp() {
           // Issue copies, these can be expensive cross register class copies.
           SmallVector<SUnit*, 2> Copies;
           InsertCopiesAndMoveSuccs(LRDef, Reg, DestRC, RC, Copies);
-          DOUT << "Adding an edge from SU # " << TrySU->NodeNum
-               << " to SU #" << Copies.front()->NodeNum << "\n";
+          DEBUG(dbgs() << "Adding an edge from SU # " << TrySU->NodeNum
+                       << " to SU #" << Copies.front()->NodeNum << "\n");
           AddPred(TrySU, SDep(Copies.front(), SDep::Order, /*Latency=*/1,
                               /*Reg=*/0, /*isNormalMemory=*/false,
                               /*isMustAlias=*/false, /*isArtificial=*/true));
           NewDef = Copies.back();
         }
 
-        DOUT << "Adding an edge from SU # " << NewDef->NodeNum
-             << " to SU #" << TrySU->NodeNum << "\n";
+        DEBUG(dbgs() << "Adding an edge from SU # " << NewDef->NodeNum
+                     << " to SU #" << TrySU->NodeNum << "\n");
         LiveRegDefs[Reg] = NewDef;
         AddPred(NewDef, SDep(TrySU, SDep::Order, /*Latency=*/1,
                              /*Reg=*/0, /*isNormalMemory=*/false,
@@ -587,41 +618,11 @@ void ScheduleDAGFast::ListScheduleBottomUp() {
     ++CurCycle;
   }
 
-  // Reverse the order if it is bottom up.
+  // Reverse the order since it is bottom up.
   std::reverse(Sequence.begin(), Sequence.end());
-  
-  
+
 #ifndef NDEBUG
-  // Verify that all SUnits were scheduled.
-  bool AnyNotSched = false;
-  unsigned DeadNodes = 0;
-  unsigned Noops = 0;
-  for (unsigned i = 0, e = SUnits.size(); i != e; ++i) {
-    if (!SUnits[i].isScheduled) {
-      if (SUnits[i].NumPreds == 0 && SUnits[i].NumSuccs == 0) {
-        ++DeadNodes;
-        continue;
-      }
-      if (!AnyNotSched)
-        cerr << "*** List scheduling failed! ***\n";
-      SUnits[i].dump(this);
-      cerr << "has not been scheduled!\n";
-      AnyNotSched = true;
-    }
-    if (SUnits[i].NumSuccsLeft != 0) {
-      if (!AnyNotSched)
-        cerr << "*** List scheduling failed! ***\n";
-      SUnits[i].dump(this);
-      cerr << "has successors left!\n";
-      AnyNotSched = true;
-    }
-  }
-  for (unsigned i = 0, e = Sequence.size(); i != e; ++i)
-    if (!Sequence[i])
-      ++Noops;
-  assert(!AnyNotSched);
-  assert(Sequence.size() + DeadNodes - Noops == SUnits.size() &&
-         "The number of nodes scheduled doesn't match the expected number!");
+  VerifySchedule(/*isBottomUp=*/true);
 #endif
 }
 

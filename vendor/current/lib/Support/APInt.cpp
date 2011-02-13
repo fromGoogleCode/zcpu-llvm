@@ -102,7 +102,7 @@ APInt::APInt(unsigned numBits, unsigned numWords, const uint64_t bigVal[])
   clearUnusedBits();
 }
 
-APInt::APInt(unsigned numbits, const StringRef& Str, uint8_t radix)
+APInt::APInt(unsigned numbits, StringRef Str, uint8_t radix)
   : BitWidth(numbits), VAL(0) {
   assert(BitWidth && "Bitwidth too small");
   fromString(numbits, Str, radix);
@@ -273,7 +273,7 @@ APInt& APInt::operator-=(const APInt& RHS) {
   return clearUnusedBits();
 }
 
-/// Multiplies an integer array, x by a a uint64_t integer and places the result
+/// Multiplies an integer array, x, by a uint64_t integer and places the result
 /// into dest.
 /// @returns the carry out of the multiplication.
 /// @brief Multiply a multi-digit APInt by a single digit (64-bit) integer.
@@ -613,7 +613,7 @@ APInt& APInt::flip(unsigned bitPosition) {
   return *this;
 }
 
-unsigned APInt::getBitsNeeded(const StringRef& str, uint8_t radix) {
+unsigned APInt::getBitsNeeded(StringRef str, uint8_t radix) {
   assert(!str.empty() && "Invalid string length");
   assert((radix == 10 || radix == 8 || radix == 16 || radix == 2) &&
          "Radix should be 2, 8, 10, or 16!");
@@ -702,15 +702,14 @@ static inline uint32_t hashword(const uint64_t *k64, size_t length)
   a = b = c = 0xdeadbeef + (((uint32_t)length)<<2);
 
   /*------------------------------------------------- handle most of the key */
-  while (length > 3)
-    {
-      a += k[0];
-      b += k[1];
-      c += k[2];
-      mix(a,b,c);
-      length -= 3;
-      k += 3;
-    }
+  while (length > 3) {
+    a += k[0];
+    b += k[1];
+    c += k[2];
+    mix(a,b,c);
+    length -= 3;
+    k += 3;
+  }
 
   /*------------------------------------------- handle the last 3 uint32_t's */
   switch (length) {                  /* all the case statements fall through */
@@ -767,8 +766,23 @@ bool APInt::isPowerOf2() const {
 }
 
 unsigned APInt::countLeadingZerosSlowCase() const {
-  unsigned Count = 0;
-  for (unsigned i = getNumWords(); i > 0u; --i) {
+  // Treat the most significand word differently because it might have
+  // meaningless bits set beyond the precision.
+  unsigned BitsInMSW = BitWidth % APINT_BITS_PER_WORD;
+  integerPart MSWMask;
+  if (BitsInMSW) MSWMask = (integerPart(1) << BitsInMSW) - 1;
+  else {
+    MSWMask = ~integerPart(0);
+    BitsInMSW = APINT_BITS_PER_WORD;
+  }
+
+  unsigned i = getNumWords();
+  integerPart MSW = pVal[i-1] & MSWMask;
+  if (MSW)
+    return CountLeadingZeros_64(MSW) - (APINT_BITS_PER_WORD - BitsInMSW);
+
+  unsigned Count = BitsInMSW;
+  for (--i; i > 0u; --i) {
     if (pVal[i-1] == 0)
       Count += APINT_BITS_PER_WORD;
     else {
@@ -776,10 +790,7 @@ unsigned APInt::countLeadingZerosSlowCase() const {
       break;
     }
   }
-  unsigned remainder = BitWidth % APINT_BITS_PER_WORD;
-  if (remainder)
-    Count -= APINT_BITS_PER_WORD - remainder;
-  return std::min(Count, BitWidth);
+  return Count;
 }
 
 static unsigned countLeadingOnes_64(uint64_t V, unsigned skip) {
@@ -1371,13 +1382,12 @@ APInt APInt::sqrt() const {
   // libc sqrt function which will probably use a hardware sqrt computation.
   // This should be faster than the algorithm below.
   if (magnitude < 52) {
-#ifdef _MSC_VER
-    // Amazingly, VC++ doesn't have round().
-    return APInt(BitWidth,
-                 uint64_t(::sqrt(double(isSingleWord()?VAL:pVal[0]))) + 0.5);
-#else
+#if HAVE_ROUND
     return APInt(BitWidth,
                  uint64_t(::round(::sqrt(double(isSingleWord()?VAL:pVal[0])))));
+#else
+    return APInt(BitWidth,
+                 uint64_t(::sqrt(double(isSingleWord()?VAL:pVal[0]))) + 0.5);
 #endif
   }
 
@@ -1481,9 +1491,7 @@ APInt::ms APInt::magic() const {
   const APInt& d = *this;
   unsigned p;
   APInt ad, anc, delta, q1, r1, q2, r2, t;
-  APInt allOnes = APInt::getAllOnesValue(d.getBitWidth());
   APInt signedMin = APInt::getSignedMinValue(d.getBitWidth());
-  APInt signedMax = APInt::getSignedMaxValue(d.getBitWidth());
   struct ms mag;
 
   ad = d.abs();
@@ -1582,12 +1590,12 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
   uint64_t b = uint64_t(1) << 32;
 
 #if 0
-  DEBUG(errs() << "KnuthDiv: m=" << m << " n=" << n << '\n');
-  DEBUG(errs() << "KnuthDiv: original:");
-  DEBUG(for (int i = m+n; i >=0; i--) errs() << " " << u[i]);
-  DEBUG(errs() << " by");
-  DEBUG(for (int i = n; i >0; i--) errs() << " " << v[i-1]);
-  DEBUG(errs() << '\n');
+  DEBUG(dbgs() << "KnuthDiv: m=" << m << " n=" << n << '\n');
+  DEBUG(dbgs() << "KnuthDiv: original:");
+  DEBUG(for (int i = m+n; i >=0; i--) dbgs() << " " << u[i]);
+  DEBUG(dbgs() << " by");
+  DEBUG(for (int i = n; i >0; i--) dbgs() << " " << v[i-1]);
+  DEBUG(dbgs() << '\n');
 #endif
   // D1. [Normalize.] Set d = b / (v[n-1] + 1) and multiply all the digits of
   // u and v by d. Note that we have taken Knuth's advice here to use a power
@@ -1614,17 +1622,17 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
   }
   u[m+n] = u_carry;
 #if 0
-  DEBUG(errs() << "KnuthDiv:   normal:");
-  DEBUG(for (int i = m+n; i >=0; i--) errs() << " " << u[i]);
-  DEBUG(errs() << " by");
-  DEBUG(for (int i = n; i >0; i--) errs() << " " << v[i-1]);
-  DEBUG(errs() << '\n');
+  DEBUG(dbgs() << "KnuthDiv:   normal:");
+  DEBUG(for (int i = m+n; i >=0; i--) dbgs() << " " << u[i]);
+  DEBUG(dbgs() << " by");
+  DEBUG(for (int i = n; i >0; i--) dbgs() << " " << v[i-1]);
+  DEBUG(dbgs() << '\n');
 #endif
 
   // D2. [Initialize j.]  Set j to m. This is the loop counter over the places.
   int j = m;
   do {
-    DEBUG(errs() << "KnuthDiv: quotient digit #" << j << '\n');
+    DEBUG(dbgs() << "KnuthDiv: quotient digit #" << j << '\n');
     // D3. [Calculate q'.].
     //     Set qp = (u[j+n]*b + u[j+n-1]) / v[n-1]. (qp=qprime=q')
     //     Set rp = (u[j+n]*b + u[j+n-1]) % v[n-1]. (rp=rprime=r')
@@ -1634,7 +1642,7 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
     // value qp is one too large, and it eliminates all cases where qp is two
     // too large.
     uint64_t dividend = ((uint64_t(u[j+n]) << 32) + u[j+n-1]);
-    DEBUG(errs() << "KnuthDiv: dividend == " << dividend << '\n');
+    DEBUG(dbgs() << "KnuthDiv: dividend == " << dividend << '\n');
     uint64_t qp = dividend / v[n-1];
     uint64_t rp = dividend % v[n-1];
     if (qp == b || qp*v[n-2] > b*rp + u[j+n-2]) {
@@ -1643,7 +1651,7 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
       if (rp < b && (qp == b || qp*v[n-2] > b*rp + u[j+n-2]))
         qp--;
     }
-    DEBUG(errs() << "KnuthDiv: qp == " << qp << ", rp == " << rp << '\n');
+    DEBUG(dbgs() << "KnuthDiv: qp == " << qp << ", rp == " << rp << '\n');
 
     // D4. [Multiply and subtract.] Replace (u[j+n]u[j+n-1]...u[j]) with
     // (u[j+n]u[j+n-1]..u[j]) - qp * (v[n-1]...v[1]v[0]). This computation
@@ -1654,7 +1662,7 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
       uint64_t u_tmp = uint64_t(u[j+i]) | (uint64_t(u[j+i+1]) << 32);
       uint64_t subtrahend = uint64_t(qp) * uint64_t(v[i]);
       bool borrow = subtrahend > u_tmp;
-      DEBUG(errs() << "KnuthDiv: u_tmp == " << u_tmp
+      DEBUG(dbgs() << "KnuthDiv: u_tmp == " << u_tmp
                    << ", subtrahend == " << subtrahend
                    << ", borrow = " << borrow << '\n');
 
@@ -1668,12 +1676,12 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
         k++;
       }
       isNeg |= borrow;
-      DEBUG(errs() << "KnuthDiv: u[j+i] == " << u[j+i] << ",  u[j+i+1] == " <<
+      DEBUG(dbgs() << "KnuthDiv: u[j+i] == " << u[j+i] << ",  u[j+i+1] == " <<
                     u[j+i+1] << '\n');
     }
-    DEBUG(errs() << "KnuthDiv: after subtraction:");
-    DEBUG(for (int i = m+n; i >=0; i--) errs() << " " << u[i]);
-    DEBUG(errs() << '\n');
+    DEBUG(dbgs() << "KnuthDiv: after subtraction:");
+    DEBUG(for (int i = m+n; i >=0; i--) dbgs() << " " << u[i]);
+    DEBUG(dbgs() << '\n');
     // The digits (u[j+n]...u[j]) should be kept positive; if the result of
     // this step is actually negative, (u[j+n]...u[j]) should be left as the
     // true value plus b**(n+1), namely as the b's complement of
@@ -1686,9 +1694,9 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
         carry = carry && u[i] == 0;
       }
     }
-    DEBUG(errs() << "KnuthDiv: after complement:");
-    DEBUG(for (int i = m+n; i >=0; i--) errs() << " " << u[i]);
-    DEBUG(errs() << '\n');
+    DEBUG(dbgs() << "KnuthDiv: after complement:");
+    DEBUG(for (int i = m+n; i >=0; i--) dbgs() << " " << u[i]);
+    DEBUG(dbgs() << '\n');
 
     // D5. [Test remainder.] Set q[j] = qp. If the result of step D4 was
     // negative, go to step D6; otherwise go on to step D7.
@@ -1709,16 +1717,16 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
       }
       u[j+n] += carry;
     }
-    DEBUG(errs() << "KnuthDiv: after correction:");
-    DEBUG(for (int i = m+n; i >=0; i--) errs() <<" " << u[i]);
-    DEBUG(errs() << "\nKnuthDiv: digit result = " << q[j] << '\n');
+    DEBUG(dbgs() << "KnuthDiv: after correction:");
+    DEBUG(for (int i = m+n; i >=0; i--) dbgs() <<" " << u[i]);
+    DEBUG(dbgs() << "\nKnuthDiv: digit result = " << q[j] << '\n');
 
   // D7. [Loop on j.]  Decrease j by one. Now if j >= 0, go back to D3.
   } while (--j >= 0);
 
-  DEBUG(errs() << "KnuthDiv: quotient:");
-  DEBUG(for (int i = m; i >=0; i--) errs() <<" " << q[i]);
-  DEBUG(errs() << '\n');
+  DEBUG(dbgs() << "KnuthDiv: quotient:");
+  DEBUG(for (int i = m; i >=0; i--) dbgs() <<" " << q[i]);
+  DEBUG(dbgs() << '\n');
 
   // D8. [Unnormalize]. Now q[...] is the desired quotient, and the desired
   // remainder may be obtained by dividing u[...] by d. If r is non-null we
@@ -1729,22 +1737,22 @@ static void KnuthDiv(unsigned *u, unsigned *v, unsigned *q, unsigned* r,
     // shift right here. In order to mak
     if (shift) {
       unsigned carry = 0;
-      DEBUG(errs() << "KnuthDiv: remainder:");
+      DEBUG(dbgs() << "KnuthDiv: remainder:");
       for (int i = n-1; i >= 0; i--) {
         r[i] = (u[i] >> shift) | carry;
         carry = u[i] << (32 - shift);
-        DEBUG(errs() << " " << r[i]);
+        DEBUG(dbgs() << " " << r[i]);
       }
     } else {
       for (int i = n-1; i >= 0; i--) {
         r[i] = u[i];
-        DEBUG(errs() << " " << r[i]);
+        DEBUG(dbgs() << " " << r[i]);
       }
     }
-    DEBUG(errs() << '\n');
+    DEBUG(dbgs() << '\n');
   }
 #if 0
-  DEBUG(errs() << '\n');
+  DEBUG(dbgs() << '\n');
 #endif
 }
 
@@ -1756,7 +1764,7 @@ void APInt::divide(const APInt LHS, unsigned lhsWords,
 
   // First, compose the values into an array of 32-bit words instead of
   // 64-bit words. This is a necessity of both the "short division" algorithm
-  // and the the Knuth "classical algorithm" which requires there to be native
+  // and the Knuth "classical algorithm" which requires there to be native
   // operations for +, -, and * on an m bit value with an m*2 bit result. We
   // can't use 64-bit operands here because we don't have native results of
   // 128-bits. Furthermore, casting the 64-bit values to 32-bit values won't
@@ -2014,8 +2022,8 @@ void APInt::udivrem(const APInt &LHS, const APInt &RHS,
   }
 
   if (lhsWords < rhsWords || LHS.ult(RHS)) {
-    Quotient = 0;               // X / Y ===> 0, iff X < Y
     Remainder = LHS;            // X % Y ===> X, iff X < Y
+    Quotient = 0;               // X / Y ===> 0, iff X < Y
     return;
   }
 
@@ -2038,7 +2046,7 @@ void APInt::udivrem(const APInt &LHS, const APInt &RHS,
   divide(LHS, lhsWords, RHS, rhsWords, &Quotient, &Remainder);
 }
 
-void APInt::fromString(unsigned numbits, const StringRef& str, uint8_t radix) {
+void APInt::fromString(unsigned numbits, StringRef str, uint8_t radix) {
   // Check our assumptions here
   assert(!str.empty() && "Invalid string length");
   assert((radix == 10 || radix == 8 || radix == 16 || radix == 2) &&
@@ -2055,8 +2063,8 @@ void APInt::fromString(unsigned numbits, const StringRef& str, uint8_t radix) {
   assert((slen <= numbits || radix != 2) && "Insufficient bit width");
   assert(((slen-1)*3 <= numbits || radix != 8) && "Insufficient bit width");
   assert(((slen-1)*4 <= numbits || radix != 16) && "Insufficient bit width");
-  assert((((slen-1)*64)/22 <= numbits || radix != 10)
-	 && "Insufficient bit width");
+  assert((((slen-1)*64)/22 <= numbits || radix != 10) &&
+         "Insufficient bit width");
 
   // Allocate memory
   if (!isSingleWord())
@@ -2115,15 +2123,16 @@ void APInt::toString(SmallVectorImpl<char> &Str, unsigned Radix,
     char *BufPtr = Buffer+65;
 
     uint64_t N;
-    if (Signed) {
-      int64_t I = getSExtValue();
-      if (I < 0) {
-        Str.push_back('-');
-        I = -I;
-      }
-      N = I;
-    } else {
+    if (!Signed) {
       N = getZExtValue();
+    } else {
+      int64_t I = getSExtValue();
+      if (I >= 0) {
+        N = I;
+      } else {
+        Str.push_back('-');
+        N = -(uint64_t)I;
+      }
     }
 
     while (N) {
@@ -2193,7 +2202,7 @@ void APInt::dump() const {
   SmallString<40> S, U;
   this->toStringUnsigned(U);
   this->toStringSigned(S);
-  errs() << "APInt(" << BitWidth << "b, "
+  dbgs() << "APInt(" << BitWidth << "b, "
          << U.str() << "u " << S.str() << "s)";
 }
 
@@ -2203,17 +2212,11 @@ void APInt::print(raw_ostream &OS, bool isSigned) const {
   OS << S.str();
 }
 
-std::ostream &llvm::operator<<(std::ostream &o, const APInt &I) {
-  raw_os_ostream OS(o);
-  OS << I;
-  return o;
-}
-
 // This implements a variety of operations on a representation of
 // arbitrary precision, two's-complement, bignum integer values.
 
-/* Assumed by lowHalf, highHalf, partMSB and partLSB.  A fairly safe
-   and unrestricting assumption.  */
+// Assumed by lowHalf, highHalf, partMSB and partLSB.  A fairly safe
+// and unrestricting assumption.
 #define COMPILE_TIME_ASSERT(cond) extern int CTAssert[(cond) ? 1 : -1]
 COMPILE_TIME_ASSERT(integerPartWidth % 2 == 0);
 
@@ -2225,7 +2228,7 @@ namespace {
   static inline integerPart
   lowBitMask(unsigned int bits)
   {
-    assert (bits != 0 && bits <= integerPartWidth);
+    assert(bits != 0 && bits <= integerPartWidth);
 
     return ~(integerPart) 0 >> (integerPartWidth - bits);
   }
@@ -2302,10 +2305,10 @@ APInt::tcSet(integerPart *dst, integerPart part, unsigned int parts)
 {
   unsigned int i;
 
-  assert (parts > 0);
+  assert(parts > 0);
 
   dst[0] = part;
-  for(i = 1; i < parts; i++)
+  for (i = 1; i < parts; i++)
     dst[i] = 0;
 }
 
@@ -2315,7 +2318,7 @@ APInt::tcAssign(integerPart *dst, const integerPart *src, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     dst[i] = src[i];
 }
 
@@ -2325,7 +2328,7 @@ APInt::tcIsZero(const integerPart *src, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     if (src[i])
       return false;
 
@@ -2336,15 +2339,23 @@ APInt::tcIsZero(const integerPart *src, unsigned int parts)
 int
 APInt::tcExtractBit(const integerPart *parts, unsigned int bit)
 {
-  return(parts[bit / integerPartWidth]
-         & ((integerPart) 1 << bit % integerPartWidth)) != 0;
+  return (parts[bit / integerPartWidth] &
+          ((integerPart) 1 << bit % integerPartWidth)) != 0;
 }
 
-/* Set the given bit of a bignum.  */
+/* Set the given bit of a bignum. */
 void
 APInt::tcSetBit(integerPart *parts, unsigned int bit)
 {
   parts[bit / integerPartWidth] |= (integerPart) 1 << (bit % integerPartWidth);
+}
+
+/* Clears the given bit of a bignum. */
+void
+APInt::tcClearBit(integerPart *parts, unsigned int bit)
+{
+  parts[bit / integerPartWidth] &=
+    ~((integerPart) 1 << (bit % integerPartWidth));
 }
 
 /* Returns the bit number of the least significant set bit of a
@@ -2354,7 +2365,7 @@ APInt::tcLSB(const integerPart *parts, unsigned int n)
 {
   unsigned int i, lsb;
 
-  for(i = 0; i < n; i++) {
+  for (i = 0; i < n; i++) {
       if (parts[i] != 0) {
           lsb = partLSB(parts[i]);
 
@@ -2373,13 +2384,13 @@ APInt::tcMSB(const integerPart *parts, unsigned int n)
   unsigned int msb;
 
   do {
-      --n;
+    --n;
 
-      if (parts[n] != 0) {
-          msb = partMSB(parts[n]);
+    if (parts[n] != 0) {
+      msb = partMSB(parts[n]);
 
-          return msb + n * integerPartWidth;
-      }
+      return msb + n * integerPartWidth;
+    }
   } while (n);
 
   return -1U;
@@ -2396,7 +2407,7 @@ APInt::tcExtract(integerPart *dst, unsigned int dstCount,const integerPart *src,
   unsigned int firstSrcPart, dstParts, shift, n;
 
   dstParts = (srcBits + integerPartWidth - 1) / integerPartWidth;
-  assert (dstParts <= dstCount);
+  assert(dstParts <= dstCount);
 
   firstSrcPart = srcLSB / integerPartWidth;
   tcAssign (dst, src + firstSrcPart, dstParts);
@@ -2431,7 +2442,7 @@ APInt::tcAdd(integerPart *dst, const integerPart *rhs,
 
   assert(c <= 1);
 
-  for(i = 0; i < parts; i++) {
+  for (i = 0; i < parts; i++) {
     integerPart l;
 
     l = dst[i];
@@ -2456,7 +2467,7 @@ APInt::tcSubtract(integerPart *dst, const integerPart *rhs,
 
   assert(c <= 1);
 
-  for(i = 0; i < parts; i++) {
+  for (i = 0; i < parts; i++) {
     integerPart l;
 
     l = dst[i];
@@ -2506,7 +2517,7 @@ APInt::tcMultiplyPart(integerPart *dst, const integerPart *src,
   /* N loops; minimum of dstParts and srcParts.  */
   n = dstParts < srcParts ? dstParts: srcParts;
 
-  for(i = 0; i < n; i++) {
+  for (i = 0; i < n; i++) {
     integerPart low, mid, high, srcPart;
 
       /* [ LOW, HIGH ] = MULTIPLIER * SRC[i] + DST[i] + CARRY.
@@ -2571,7 +2582,7 @@ APInt::tcMultiplyPart(integerPart *dst, const integerPart *src,
        non-zero.  This is true if any remaining src parts are non-zero
        and the multiplier is non-zero.  */
     if (multiplier)
-      for(; i < srcParts; i++)
+      for (; i < srcParts; i++)
         if (src[i])
           return 1;
 
@@ -2596,7 +2607,7 @@ APInt::tcMultiply(integerPart *dst, const integerPart *lhs,
   overflow = 0;
   tcSet(dst, 0, parts);
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     overflow |= tcMultiplyPart(&dst[i], lhs, rhs[i], 0, parts,
                                parts - i, true);
 
@@ -2622,7 +2633,7 @@ APInt::tcFullMultiply(integerPart *dst, const integerPart *lhs,
 
     tcSet(dst, 0, rhsParts);
 
-    for(n = 0; n < lhsParts; n++)
+    for (n = 0; n < lhsParts; n++)
       tcMultiplyPart(&dst[n], rhs, lhs[n], 0, rhsParts, rhsParts + 1, true);
 
     n = lhsParts + rhsParts;
@@ -2666,7 +2677,7 @@ APInt::tcDivide(integerPart *lhs, const integerPart *rhs,
 
   /* Loop, subtracting SRHS if REMAINDER is greater and adding that to
      the total.  */
-  for(;;) {
+  for (;;) {
       int compare;
 
       compare = tcCompare(remainder, srhs, parts);
@@ -2734,7 +2745,7 @@ APInt::tcShiftRight(integerPart *dst, unsigned int parts, unsigned int count)
 
     /* Perform the shift.  This leaves the most significant COUNT bits
        of the result at zero.  */
-    for(i = 0; i < parts; i++) {
+    for (i = 0; i < parts; i++) {
       integerPart part;
 
       if (i + jump >= parts) {
@@ -2759,7 +2770,7 @@ APInt::tcAnd(integerPart *dst, const integerPart *rhs, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     dst[i] &= rhs[i];
 }
 
@@ -2769,7 +2780,7 @@ APInt::tcOr(integerPart *dst, const integerPart *rhs, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     dst[i] |= rhs[i];
 }
 
@@ -2779,7 +2790,7 @@ APInt::tcXor(integerPart *dst, const integerPart *rhs, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     dst[i] ^= rhs[i];
 }
 
@@ -2789,7 +2800,7 @@ APInt::tcComplement(integerPart *dst, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     dst[i] = ~dst[i];
 }
 
@@ -2818,7 +2829,7 @@ APInt::tcIncrement(integerPart *dst, unsigned int parts)
 {
   unsigned int i;
 
-  for(i = 0; i < parts; i++)
+  for (i = 0; i < parts; i++)
     if (++dst[i] != 0)
       break;
 

@@ -15,6 +15,7 @@
 #ifndef BITSTREAM_WRITER_H
 #define BITSTREAM_WRITER_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Bitcode/BitCodes.h"
 #include <vector>
 
@@ -87,7 +88,7 @@ public:
   //===--------------------------------------------------------------------===//
 
   void Emit(uint32_t Val, unsigned NumBits) {
-    assert(NumBits <= 32 && "Invalid value size!");
+    assert(NumBits && NumBits <= 32 && "Invalid value size!");
     assert((Val & ~(~0U >> (32-NumBits))) == 0 && "High bits set!");
     CurValue |= Val << CurBit;
     if (CurBit + NumBits < 32) {
@@ -276,10 +277,12 @@ private:
     switch (Op.getEncoding()) {
     default: assert(0 && "Unknown encoding!");
     case BitCodeAbbrevOp::Fixed:
-      Emit((unsigned)V, (unsigned)Op.getEncodingData());
+      if (Op.getEncodingData())
+        Emit((unsigned)V, (unsigned)Op.getEncodingData());
       break;
     case BitCodeAbbrevOp::VBR:
-      EmitVBR64(V, (unsigned)Op.getEncodingData());
+      if (Op.getEncodingData())
+        EmitVBR64(V, (unsigned)Op.getEncodingData());
       break;
     case BitCodeAbbrevOp::Char6:
       Emit(BitCodeAbbrevOp::EncodeChar6((char)V), 6);
@@ -290,10 +293,12 @@ private:
   /// EmitRecordWithAbbrevImpl - This is the core implementation of the record
   /// emission code.  If BlobData is non-null, then it specifies an array of
   /// data that should be emitted as part of the Blob or Array operand that is
-  /// known to exist at the end of the the record.
+  /// known to exist at the end of the record.
   template<typename uintty>
   void EmitRecordWithAbbrevImpl(unsigned Abbrev, SmallVectorImpl<uintty> &Vals,
-                                const char *BlobData, unsigned BlobLen) {
+                                StringRef Blob) {
+    const char *BlobData = Blob.data();
+    unsigned BlobLen = (unsigned) Blob.size();
     unsigned AbbrevNo = Abbrev-bitc::FIRST_APPLICATION_ABBREV;
     assert(AbbrevNo < CurAbbrevs.size() && "Invalid abbrev #!");
     BitCodeAbbrev *Abbv = CurAbbrevs[AbbrevNo];
@@ -409,7 +414,7 @@ public:
   /// the first entry.
   template<typename uintty>
   void EmitRecordWithAbbrev(unsigned Abbrev, SmallVectorImpl<uintty> &Vals) {
-    EmitRecordWithAbbrevImpl(Abbrev, Vals, 0, 0);
+    EmitRecordWithAbbrevImpl(Abbrev, Vals, StringRef());
   }
   
   /// EmitRecordWithBlob - Emit the specified record to the stream, using an
@@ -419,16 +424,27 @@ public:
   /// of the record.
   template<typename uintty>
   void EmitRecordWithBlob(unsigned Abbrev, SmallVectorImpl<uintty> &Vals,
+                          StringRef Blob) {
+    EmitRecordWithAbbrevImpl(Abbrev, Vals, Blob);
+  }
+  template<typename uintty>
+  void EmitRecordWithBlob(unsigned Abbrev, SmallVectorImpl<uintty> &Vals,
                           const char *BlobData, unsigned BlobLen) {
-    EmitRecordWithAbbrevImpl(Abbrev, Vals, BlobData, BlobLen);
+    return EmitRecordWithAbbrevImpl(Abbrev, Vals, StringRef(BlobData, BlobLen));
   }
 
   /// EmitRecordWithArray - Just like EmitRecordWithBlob, works with records
   /// that end with an array.
   template<typename uintty>
   void EmitRecordWithArray(unsigned Abbrev, SmallVectorImpl<uintty> &Vals,
+                          StringRef Array) {
+    EmitRecordWithAbbrevImpl(Abbrev, Vals, Array);
+  }
+  template<typename uintty>
+  void EmitRecordWithArray(unsigned Abbrev, SmallVectorImpl<uintty> &Vals,
                           const char *ArrayData, unsigned ArrayLen) {
-    EmitRecordWithAbbrevImpl(Abbrev, Vals, ArrayData, ArrayLen);
+    return EmitRecordWithAbbrevImpl(Abbrev, Vals, StringRef(ArrayData, 
+                                                            ArrayLen));
   }
   
   //===--------------------------------------------------------------------===//

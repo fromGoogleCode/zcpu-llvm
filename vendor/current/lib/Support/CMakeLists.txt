@@ -3,9 +3,13 @@ add_llvm_library(LLVMSupport
   APInt.cpp
   APSInt.cpp
   Allocator.cpp
+  circular_raw_ostream.cpp
   CommandLine.cpp
   ConstantRange.cpp
+  CrashRecoveryContext.cpp
   Debug.cpp
+  DeltaAlgorithm.cpp
+  DAGDeltaAlgorithm.cpp
   Dwarf.cpp
   ErrorHandling.cpp
   FileUtilities.cpp
@@ -16,22 +20,30 @@ add_llvm_library(LLVMSupport
   IsNAN.cpp
   ManagedStatic.cpp
   MemoryBuffer.cpp
+  MemoryObject.cpp
   PluginLoader.cpp
   PrettyStackTrace.cpp
-  SlowOperationInformer.cpp
+  Regex.cpp
   SmallPtrSet.cpp
+  SmallVector.cpp
   SourceMgr.cpp
   Statistic.cpp
-  Streams.cpp
   StringExtras.cpp
   StringMap.cpp
   StringPool.cpp
+  StringRef.cpp
   SystemUtils.cpp
   TargetRegistry.cpp
   Timer.cpp
   Triple.cpp
   Twine.cpp
+  raw_os_ostream.cpp
   raw_ostream.cpp
+  regcomp.c
+  regerror.c
+  regexec.c
+  regfree.c
+  regstrlcpy.c
   )
 
 target_link_libraries (LLVMSupport LLVMSystem)

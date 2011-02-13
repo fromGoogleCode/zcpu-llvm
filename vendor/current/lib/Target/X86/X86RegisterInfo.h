@@ -30,15 +30,6 @@ namespace N86 {
   };
 }
 
-namespace X86 {
-  /// SubregIndex - The index of various sized subregister classes. Note that 
-  /// these indices must be kept in sync with the class indices in the 
-  /// X86RegisterInfo.td file.
-  enum SubregIndex {
-    SUBREG_8BIT = 1, SUBREG_8BIT_HI = 2, SUBREG_16BIT = 3, SUBREG_32BIT = 4
-  };
-}
-
 /// DWARFFlavour - Flavour of dwarf regnumbers
 ///
 namespace DWARFFlavour {
@@ -114,12 +105,6 @@ public:
   /// callee-save registers on this target.
   const unsigned *getCalleeSavedRegs(const MachineFunction* MF = 0) const;
 
-  /// getCalleeSavedRegClasses - Return a null-terminated list of the preferred
-  /// register classes to spill each callee-saved register with.  The order and
-  /// length of this list match the getCalleeSavedRegs() list.
-  const TargetRegisterClass* const*
-  getCalleeSavedRegClasses(const MachineFunction *MF = 0) const;
-
   /// getReservedRegs - Returns a bitset indexed by physical register number
   /// indicating if a register is a special register that has particular uses and
   /// should be considered unavailable at all times, e.g. SP, RA. This is used by
@@ -128,11 +113,13 @@ public:
 
   bool hasFP(const MachineFunction &MF) const;
 
+  bool canRealignStack(const MachineFunction &MF) const;
+
   bool needsStackRealignment(const MachineFunction &MF) const;
 
-  bool hasReservedCallFrame(MachineFunction &MF) const;
+  bool hasReservedCallFrame(const MachineFunction &MF) const;
 
-  bool hasReservedSpillSlot(MachineFunction &MF, unsigned Reg,
+  bool hasReservedSpillSlot(const MachineFunction &MF, unsigned Reg,
                             int &FrameIdx) const;
 
   void eliminateCallFramePseudoInstr(MachineFunction &MF,
@@ -145,15 +132,15 @@ public:
   void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
                                             RegScavenger *RS = NULL) const;
 
-  void emitCalleeSavedFrameMoves(MachineFunction &MF, unsigned LabelId,
+  void emitCalleeSavedFrameMoves(MachineFunction &MF, MCSymbol *Label,
                                  unsigned FramePtr) const;
   void emitPrologue(MachineFunction &MF) const;
   void emitEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const;
 
   // Debug information queries.
   unsigned getRARegister() const;
-  unsigned getFrameRegister(MachineFunction &MF) const;
-  int getFrameIndexOffset(MachineFunction &MF, int FI) const;
+  unsigned getFrameRegister(const MachineFunction &MF) const;
+  int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
   void getInitialFrameState(std::vector<MachineMove> &Moves) const;
 
   // Exception handling queries.

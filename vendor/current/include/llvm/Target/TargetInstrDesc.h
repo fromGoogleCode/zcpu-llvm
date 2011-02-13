@@ -15,6 +15,8 @@
 #ifndef LLVM_TARGET_TARGETINSTRDESC_H
 #define LLVM_TARGET_TARGETINSTRDESC_H
 
+#include "llvm/System/DataTypes.h"
+
 namespace llvm {
 
 class TargetRegisterClass;
@@ -25,9 +27,10 @@ class TargetRegisterInfo;
 //===----------------------------------------------------------------------===//
   
 namespace TOI {
-  // Operand constraints: only "tied_to" for now.
+  // Operand constraints
   enum OperandConstraint {
-    TIED_TO = 0  // Must be allocated the same register as.
+    TIED_TO = 0,    // Must be allocated the same register as.
+    EARLY_CLOBBER   // Operand is an early clobber register operand
   };
   
   /// OperandFlags - These are flags set on operands, but should be considered
@@ -52,7 +55,7 @@ public:
   ///
   /// NOTE: This member should be considered to be private, all access should go
   /// through "getRegClass(TRI)" below.
-  unsigned short RegClass;
+  short RegClass;
   
   /// Flags - These are flags from the TOI::OperandFlags enum.
   unsigned short Flags;
@@ -102,6 +105,7 @@ namespace TID {
     IndirectBranch,
     Predicable,
     NotDuplicable,
+    Compare,
     DelaySlot,
     FoldableAsLoad,
     MayLoad,
@@ -109,9 +113,11 @@ namespace TID {
     UnmodeledSideEffects,
     Commutable,
     ConvertibleTo3Addr,
-    UsesCustomDAGSchedInserter,
+    UsesCustomInserter,
     Rematerializable,
-    CheapAsAMove
+    CheapAsAMove,
+    ExtraSrcRegAllocReq,
+    ExtraDefRegAllocReq
   };
 }
 
@@ -128,7 +134,7 @@ public:
   unsigned short  SchedClass;    // enum identifying instr sched class
   const char *    Name;          // Name of the instruction record in td file
   unsigned        Flags;         // Flags identifying machine instr class
-  unsigned        TSFlags;       // Target Specific Flag values
+  uint64_t        TSFlags;       // Target Specific Flag values
   const unsigned *ImplicitUses;  // Registers implicitly read by this instr
   const unsigned *ImplicitDefs;  // Registers implicitly defined by this instr
   const TargetRegisterClass **RCBarriers; // Reg classes completely "clobbered"
@@ -144,6 +150,12 @@ public:
       return (int)(OpInfo[OpNum].Constraints >> Pos) & 0xf;
     }
     return -1;
+  }
+
+  /// getRegClass - Returns the register class constraint for OpNum, or NULL.
+  const TargetRegisterClass *getRegClass(unsigned OpNum,
+                                         const TargetRegisterInfo *TRI) const {
+    return OpNum < NumOperands ? OpInfo[OpNum].getRegClass(TRI) : 0;
   }
 
   /// getOpcode - Return the opcode number for this descriptor.
@@ -201,6 +213,16 @@ public:
     return ImplicitUses;
   }
   
+  /// getNumImplicitUses - Return the number of implicit uses this instruction
+  /// has.
+  unsigned getNumImplicitUses() const {
+    if (ImplicitUses == 0) return 0;
+    unsigned i = 0;
+    for (; ImplicitUses[i]; ++i) /*empty*/;
+    return i;
+  }
+  
+  
   /// getImplicitDefs - Return a list of registers that are potentially
   /// written by any instance of this machine instruction.  For example, on X86,
   /// many instructions implicitly set the flags register.  In this case, they
@@ -213,6 +235,15 @@ public:
   /// This method returns null if the instruction has no implicit defs.
   const unsigned *getImplicitDefs() const {
     return ImplicitDefs;
+  }
+  
+  /// getNumImplicitDefs - Return the number of implicit defs this instruction
+  /// has.
+  unsigned getNumImplicitDefs() const {
+    if (ImplicitDefs == 0) return 0;
+    unsigned i = 0;
+    for (; ImplicitDefs[i]; ++i) /*empty*/;
+    return i;
   }
   
   /// hasImplicitUseOfPhysReg - Return true if this instruction implicitly
@@ -291,7 +322,7 @@ public:
   bool isIndirectBranch() const {
     return Flags & (1 << TID::IndirectBranch);
   }
-  
+
   /// isConditionalBranch - Return true if this is a branch which may fall
   /// through to the next instruction or may transfer control flow to some other
   /// block.  The TargetInstrInfo::AnalyzeBranch method can be used to get more
@@ -314,6 +345,11 @@ public:
   /// control and modify the predicate in this instruction.
   bool isPredicable() const {
     return Flags & (1 << TID::Predicable);
+  }
+  
+  /// isCompare - Return true if this instruction is a comparison.
+  bool isCompare() const {
+    return Flags & (1 << TID::Compare);
   }
   
   /// isNotDuplicable - Return true if this instruction cannot be safely
@@ -414,7 +450,7 @@ public:
     return Flags & (1 << TID::ConvertibleTo3Addr);
   }
   
-  /// usesCustomDAGSchedInsertionHook - Return true if this instruction requires
+  /// usesCustomInsertionHook - Return true if this instruction requires
   /// custom insertion support when the DAG scheduler is inserting it into a
   /// machine basic block.  If this is true for the instruction, it basically
   /// means that it is a pseudo instruction used at SelectionDAG time that is 
@@ -422,8 +458,8 @@ public:
   ///
   /// If this is true, the TargetLoweringInfo::InsertAtEndOfBasicBlock method
   /// is used to insert this into the MachineBasicBlock.
-  bool usesCustomDAGSchedInsertionHook() const {
-    return Flags & (1 << TID::UsesCustomDAGSchedInserter);
+  bool usesCustomInsertionHook() const {
+    return Flags & (1 << TID::UsesCustomInserter);
   }
   
   /// isRematerializable - Returns true if this instruction is a candidate for
@@ -442,6 +478,26 @@ public:
   /// are not marking copies from and to the same register class with this flag.
   bool isAsCheapAsAMove() const {
     return Flags & (1 << TID::CheapAsAMove);
+  }
+
+  /// hasExtraSrcRegAllocReq - Returns true if this instruction source operands
+  /// have special register allocation requirements that are not captured by the
+  /// operand register classes. e.g. ARM::STRD's two source registers must be an
+  /// even / odd pair, ARM::STM registers have to be in ascending order.
+  /// Post-register allocation passes should not attempt to change allocations
+  /// for sources of instructions with this flag.
+  bool hasExtraSrcRegAllocReq() const {
+    return Flags & (1 << TID::ExtraSrcRegAllocReq);
+  }
+
+  /// hasExtraDefRegAllocReq - Returns true if this instruction def operands
+  /// have special register allocation requirements that are not captured by the
+  /// operand register classes. e.g. ARM::LDRD's two def registers must be an
+  /// even / odd pair, ARM::LDM registers have to be in ascending order.
+  /// Post-register allocation passes should not attempt to change allocations
+  /// for definitions of instructions with this flag.
+  bool hasExtraDefRegAllocReq() const {
+    return Flags & (1 << TID::ExtraDefRegAllocReq);
   }
 };
 

@@ -74,10 +74,17 @@ namespace llvm {
 
   //===--------------------------------------------------------------------===//
   //
-  // createAndersensPass - This pass implements Andersen's interprocedural alias
-  // analysis.
+  // createScalarEvolutionAliasAnalysisPass - This pass implements a simple
+  // alias analysis using ScalarEvolution queries.
   //
-  ModulePass *createAndersensPass();
+  FunctionPass *createScalarEvolutionAliasAnalysisPass();
+
+  //===--------------------------------------------------------------------===//
+  //
+  // createTypeBasedAliasAnalysisPass - This pass implements metadata-based
+  // type-based alias analysis.
+  //
+  ImmutablePass *createTypeBasedAliasAnalysisPass();
 
   //===--------------------------------------------------------------------===//
   //
@@ -85,6 +92,7 @@ namespace llvm {
   // file.
   //
   ModulePass *createProfileLoaderPass();
+  extern char &ProfileLoaderPassID;
 
   //===--------------------------------------------------------------------===//
   //
@@ -98,7 +106,13 @@ namespace llvm {
   // instead of loading it from a previous run.
   //
   FunctionPass *createProfileEstimatorPass();
-  extern const PassInfo *ProfileEstimatorPassID;
+  extern char &ProfileEstimatorPassID;
+
+  //===--------------------------------------------------------------------===//
+  //
+  // createProfileVerifierPass - This pass verifies profiling information.
+  //
+  FunctionPass *createProfileVerifierPass();
 
   //===--------------------------------------------------------------------===//
   //
@@ -126,6 +140,12 @@ namespace llvm {
   // createLiveValuesPass - This creates an instance of the LiveValues pass.
   //
   FunctionPass *createLiveValuesPass();
+  
+  //===--------------------------------------------------------------------===//
+  //
+  /// createLazyValueInfoPass - This creates an instance of the LazyValueInfo
+  /// pass.
+  FunctionPass *createLazyValueInfoPass();
 
   //===--------------------------------------------------------------------===//
   //
@@ -140,6 +160,16 @@ namespace llvm {
 
   // print debug info intrinsics in human readable form
   FunctionPass *createDbgInfoPrinterPass();
+
+  //===--------------------------------------------------------------------===//
+  //
+  // createRegionInfoPass - This pass finds all single entry single exit regions
+  // in a function and builds the region hierarchy.
+  //
+  FunctionPass *createRegionInfoPass();
+
+  // Print module-level debug info metadata in human-readable form.
+  ModulePass *createModuleDebugInfoPrinterPass();
 }
 
 #endif

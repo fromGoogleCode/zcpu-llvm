@@ -19,7 +19,6 @@
 
 namespace llvm {
 
-class FunctionPass;
 class ModulePass;
 class Pass;
 class Function;
@@ -46,6 +45,11 @@ ModulePass *createStripNonDebugSymbolsPass();
 ModulePass *createStripDebugDeclarePass();
 
 //===----------------------------------------------------------------------===//
+//
+// These pass removes unused symbols' debug info.
+ModulePass *createStripDeadDebugInfoPass();
+
+//===----------------------------------------------------------------------===//
 /// createLowerSetJmpPass - This function lowers the setjmp/longjmp intrinsics
 /// to invoke/unwind instructions.  This should really be part of the C/C++
 /// front-end, but it's so much easier to write transformations in LLVM proper.
@@ -70,13 +74,6 @@ ModulePass *createGlobalOptimizerPass();
 
 
 //===----------------------------------------------------------------------===//
-/// createRaiseAllocationsPass - Return a new pass that transforms malloc and
-/// free function calls into malloc and free instructions.
-///
-ModulePass *createRaiseAllocationsPass();
-
-
-//===----------------------------------------------------------------------===//
 /// createDeadTypeEliminationPass - Return a new pass that eliminates symbol
 /// table entries for types that are never used.
 ///
@@ -96,8 +93,7 @@ ModulePass *createGlobalDCEPass();
 /// possible, except for the global values specified.
 ///
 ModulePass *createGVExtractionPass(std::vector<GlobalValue*>& GVs, bool 
-                                   deleteFn = false, 
-                                   bool relinkCallees = false);
+                                   deleteFn = false);
 
 //===----------------------------------------------------------------------===//
 /// createFunctionInliningPass - Return a new pass object that uses a heuristic
@@ -174,21 +170,17 @@ ModulePass *createIPSCCPPass();
 /// createLoopExtractorPass - This pass extracts all natural loops from the
 /// program into a function if it can.
 ///
-FunctionPass *createLoopExtractorPass();
+Pass *createLoopExtractorPass();
 
 /// createSingleLoopExtractorPass - This pass extracts one natural loop from the
 /// program into a function if it can.  This is used by bugpoint.
 ///
-FunctionPass *createSingleLoopExtractorPass();
+Pass *createSingleLoopExtractorPass();
 
 /// createBlockExtractorPass - This pass extracts all blocks (except those
 /// specified in the argument list) from the functions in the module.
 ///
-ModulePass *createBlockExtractorPass(const std::vector<BasicBlock*> &BTNE);
-
-/// createIndMemRemPass - This pass removes potential indirect calls of
-/// malloc and free
-ModulePass *createIndMemRemPass();
+ModulePass *createBlockExtractorPass();
 
 /// createStripDeadPrototypesPass - This pass removes any function declarations
 /// (prototypes) that are not used.

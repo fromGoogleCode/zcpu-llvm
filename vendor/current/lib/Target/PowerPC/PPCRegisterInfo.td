@@ -10,6 +10,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+let Namespace = "PPC" in {
+def sub_lt : SubRegIndex;
+def sub_gt : SubRegIndex;
+def sub_eq : SubRegIndex;
+def sub_un : SubRegIndex;
+def sub_32 : SubRegIndex;
+}
+
+
 class PPCReg<string n> : Register<n> {
   let Namespace = "PPC";
 }
@@ -25,6 +34,7 @@ class GPR<bits<5> num, string n> : PPCReg<n> {
 class GP8<GPR SubReg, string n> : PPCReg<n> {
   field bits<5> Num = SubReg.Num;
   let SubRegs = [SubReg];
+  let SubRegIndices = [sub_32];
 }
 
 // SPR - One of the 32-bit special-purpose registers
@@ -225,6 +235,7 @@ def CR7EQ : CRBIT<30, "30">, DwarfRegNum<[0]>;
 def CR7UN : CRBIT<31, "31">, DwarfRegNum<[0]>;
 
 // Condition registers
+let SubRegIndices = [sub_lt, sub_gt, sub_eq, sub_un] in {
 def CR0 : CR<0, "cr0", [CR0LT, CR0GT, CR0EQ, CR0UN]>, DwarfRegNum<[68]>;
 def CR1 : CR<1, "cr1", [CR1LT, CR1GT, CR1EQ, CR1UN]>, DwarfRegNum<[69]>;
 def CR2 : CR<2, "cr2", [CR2LT, CR2GT, CR2EQ, CR2UN]>, DwarfRegNum<[70]>;
@@ -233,15 +244,7 @@ def CR4 : CR<4, "cr4", [CR4LT, CR4GT, CR4EQ, CR4UN]>, DwarfRegNum<[72]>;
 def CR5 : CR<5, "cr5", [CR5LT, CR5GT, CR5EQ, CR5UN]>, DwarfRegNum<[73]>;
 def CR6 : CR<6, "cr6", [CR6LT, CR6GT, CR6EQ, CR6UN]>, DwarfRegNum<[74]>;
 def CR7 : CR<7, "cr7", [CR7LT, CR7GT, CR7EQ, CR7UN]>, DwarfRegNum<[75]>;
-
-def : SubRegSet<1, [CR0, CR1, CR2, CR3, CR4, CR5, CR6, CR7],
-                   [CR0LT, CR1LT, CR2LT, CR3LT, CR4LT, CR5LT, CR6LT, CR7LT]>;
-def : SubRegSet<2, [CR0, CR1, CR2, CR3, CR4, CR5, CR6, CR7],
-                   [CR0GT, CR1GT, CR2GT, CR3GT, CR4GT, CR5GT, CR6GT, CR7GT]>;
-def : SubRegSet<3, [CR0, CR1, CR2, CR3, CR4, CR5, CR6, CR7],
-                   [CR0EQ, CR1EQ, CR2EQ, CR3EQ, CR4EQ, CR5EQ, CR6EQ, CR7EQ]>;
-def : SubRegSet<4, [CR0, CR1, CR2, CR3, CR4, CR5, CR6, CR7],
-                   [CR0UN, CR1UN, CR2UN, CR3UN, CR4UN, CR5UN, CR6UN, CR7UN]>;
+}
 
 // Link register
 def LR  : SPR<8, "lr">, DwarfRegNum<[65]>;
@@ -254,6 +257,11 @@ def CTR8 : SPR<9, "ctr">, DwarfRegNum<[66]>;
 
 // VRsave register
 def VRSAVE: SPR<256, "VRsave">, DwarfRegNum<[107]>;
+
+// Carry bit.  In the architecture this is really bit 0 of the XER register
+// (which really is SPR register 1);  this is the only bit interesting to a
+// compiler.
+def CARRY: SPR<1, "ca">, DwarfRegNum<[0]>;
 
 // FP rounding mode:  bits 30 and 31 of the FP status and control register
 // This is not allocated as a normal register; it appears only in
@@ -282,10 +290,8 @@ def GPRC : RegisterClass<"PPC", [i32], 32,
     GPRCClass::allocation_order_begin(const MachineFunction &MF) const {
       // 32-bit SVR4 ABI: r2 is reserved for the OS.
       // 64-bit SVR4 ABI: r2 is reserved for the TOC pointer.
-      if (!MF.getTarget().getSubtarget<PPCSubtarget>().isDarwin())
-        return begin()+1;
-
-      return begin();
+      // Darwin: R2 is reserved for CR save/restore sequence.
+      return begin()+1;
     }
     GPRCClass::iterator
     GPRCClass::allocation_order_end(const MachineFunction &MF) const {
@@ -320,10 +326,8 @@ def G8RC : RegisterClass<"PPC", [i64], 64,
     G8RCClass::iterator
     G8RCClass::allocation_order_begin(const MachineFunction &MF) const {
       // 64-bit SVR4 ABI: r2 is reserved for the TOC pointer.
-      if (!MF.getTarget().getSubtarget<PPCSubtarget>().isDarwin())
-        return begin()+1;
-
-      return begin();
+      // Darwin: r2 is reserved for CR save/restore sequence.
+      return begin()+1;
     }
     G8RCClass::iterator
     G8RCClass::allocation_order_end(const MachineFunction &MF) const {
@@ -371,9 +375,12 @@ def CRBITRC : RegisterClass<"PPC", [i32], 32,
 def CRRC : RegisterClass<"PPC", [i32], 32, [CR0, CR1, CR5, CR6, CR7, CR2, 
   CR3, CR4]>
 {
-  let SubRegClassList = [CRBITRC, CRBITRC, CRBITRC, CRBITRC];
+  let SubRegClasses = [(CRBITRC sub_lt, sub_gt, sub_eq, sub_un)];
 }
 
 def CTRRC : RegisterClass<"PPC", [i32], 32, [CTR]>;
 def CTRRC8 : RegisterClass<"PPC", [i64], 64, [CTR8]>;
 def VRSAVERC : RegisterClass<"PPC", [i32], 32, [VRSAVE]>;
+def CARRYRC : RegisterClass<"PPC", [i32], 32, [CARRY]> {
+  let CopyCost = -1;
+}

@@ -13,14 +13,42 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Target/TargetLowering.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineMemOperand.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/PostRAHazardRecognizer.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
+
+/// ReplaceTailWithBranchTo - Delete the instruction OldInst and everything
+/// after it, replacing it with an unconditional branch to NewDest.
+void
+TargetInstrInfoImpl::ReplaceTailWithBranchTo(MachineBasicBlock::iterator Tail,
+                                             MachineBasicBlock *NewDest) const {
+  MachineBasicBlock *MBB = Tail->getParent();
+
+  // Remove all the old successors of MBB from the CFG.
+  while (!MBB->succ_empty())
+    MBB->removeSuccessor(MBB->succ_begin());
+
+  // Remove all the dead instructions from the end of MBB.
+  MBB->erase(Tail, MBB->end());
+
+  // If MBB isn't immediately before MBB, insert a branch to it.
+  if (++MachineFunction::iterator(MBB) != MachineFunction::iterator(NewDest))
+    InsertBranch(*MBB, NewDest, 0, SmallVector<MachineOperand, 0>(),
+                 Tail->getDebugLoc());
+  MBB->addSuccessor(NewDest);
+}
 
 // commuteInstruction - The default implementation of this method just exchanges
 // the two operands returned by findCommutedOpIndices.
@@ -36,7 +64,7 @@ MachineInstr *TargetInstrInfoImpl::commuteInstruction(MachineInstr *MI,
     std::string msg;
     raw_string_ostream Msg(msg);
     Msg << "Don't know how to commute: " << *MI;
-    llvm_report_error(Msg.str());
+    report_fatal_error(Msg.str());
   }
 
   assert(MI->getOperand(Idx1).isReg() && MI->getOperand(Idx2).isReg() &&
@@ -131,46 +159,64 @@ void TargetInstrInfoImpl::reMaterialize(MachineBasicBlock &MBB,
                                         MachineBasicBlock::iterator I,
                                         unsigned DestReg,
                                         unsigned SubIdx,
-                                        const MachineInstr *Orig) const {
+                                        const MachineInstr *Orig,
+                                        const TargetRegisterInfo &TRI) const {
   MachineInstr *MI = MBB.getParent()->CloneMachineInstr(Orig);
-  MachineOperand &MO = MI->getOperand(0);
-  MO.setReg(DestReg);
-  MO.setSubReg(SubIdx);
+  MI->substituteRegister(MI->getOperand(0).getReg(), DestReg, SubIdx, TRI);
   MBB.insert(I, MI);
 }
 
-bool TargetInstrInfoImpl::isDeadInstruction(const MachineInstr *MI) const {
-  const TargetInstrDesc &TID = MI->getDesc();
-  if (TID.mayLoad() || TID.mayStore() || TID.isCall() || TID.isTerminator() ||
-      TID.isCall() || TID.isBarrier() || TID.isReturn() ||
-      TID.hasUnmodeledSideEffects())
-    return false;
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
-    if (!MO.isReg() || !MO.getReg())
-      continue;
-    if (MO.isDef() && !MO.isDead())
-      return false;
-    if (MO.isUse() && MO.isKill())
-      // FIXME: We can't remove kill markers or else the scavenger will assert.
-      // An alternative is to add a ADD pseudo instruction to replace kill
-      // markers.
-      return false;
-  }
-  return true;
+bool TargetInstrInfoImpl::produceSameValue(const MachineInstr *MI0,
+                                           const MachineInstr *MI1) const {
+  return MI0->isIdenticalTo(MI1, MachineInstr::IgnoreVRegDefs);
 }
 
-unsigned
-TargetInstrInfoImpl::GetFunctionSizeInBytes(const MachineFunction &MF) const {
-  unsigned FnSize = 0;
-  for (MachineFunction::const_iterator MBBI = MF.begin(), E = MF.end();
-       MBBI != E; ++MBBI) {
-    const MachineBasicBlock &MBB = *MBBI;
-    for (MachineBasicBlock::const_iterator I = MBB.begin(),E = MBB.end();
-         I != E; ++I)
-      FnSize += GetInstSizeInBytes(I);
-  }
-  return FnSize;
+MachineInstr *TargetInstrInfoImpl::duplicate(MachineInstr *Orig,
+                                             MachineFunction &MF) const {
+  assert(!Orig->getDesc().isNotDuplicable() &&
+         "Instruction cannot be duplicated");
+  return MF.CloneMachineInstr(Orig);
+}
+
+// If the COPY instruction in MI can be folded to a stack operation, return
+// the register class to use.
+static const TargetRegisterClass *canFoldCopy(const MachineInstr *MI,
+                                              unsigned FoldIdx) {
+  assert(MI->isCopy() && "MI must be a COPY instruction");
+  if (MI->getNumOperands() != 2)
+    return 0;
+  assert(FoldIdx<2 && "FoldIdx refers no nonexistent operand");
+
+  const MachineOperand &FoldOp = MI->getOperand(FoldIdx);
+  const MachineOperand &LiveOp = MI->getOperand(1-FoldIdx);
+
+  if (FoldOp.getSubReg() || LiveOp.getSubReg())
+    return 0;
+
+  unsigned FoldReg = FoldOp.getReg();
+  unsigned LiveReg = LiveOp.getReg();
+
+  assert(TargetRegisterInfo::isVirtualRegister(FoldReg) &&
+         "Cannot fold physregs");
+
+  const MachineRegisterInfo &MRI = MI->getParent()->getParent()->getRegInfo();
+  const TargetRegisterClass *RC = MRI.getRegClass(FoldReg);
+
+  if (TargetRegisterInfo::isPhysicalRegister(LiveOp.getReg()))
+    return RC->contains(LiveOp.getReg()) ? RC : 0;
+
+  const TargetRegisterClass *LiveRC = MRI.getRegClass(LiveReg);
+  if (RC == LiveRC || RC->hasSubClass(LiveRC))
+    return RC;
+
+  // FIXME: Allow folding when register classes are memory compatible.
+  return 0;
+}
+
+bool TargetInstrInfoImpl::
+canFoldMemoryOperand(const MachineInstr *MI,
+                     const SmallVectorImpl<unsigned> &Ops) const {
+  return MI->isCopy() && Ops.size() == 1 && canFoldCopy(MI, Ops[0]);
 }
 
 /// foldMemoryOperand - Attempt to fold a load or store of the specified stack
@@ -180,10 +226,9 @@ TargetInstrInfoImpl::GetFunctionSizeInBytes(const MachineFunction &MF) const {
 /// removing the old instruction and adding the new one in the instruction
 /// stream.
 MachineInstr*
-TargetInstrInfo::foldMemoryOperand(MachineFunction &MF,
-                                   MachineInstr* MI,
+TargetInstrInfo::foldMemoryOperand(MachineBasicBlock::iterator MI,
                                    const SmallVectorImpl<unsigned> &Ops,
-                                   int FrameIndex) const {
+                                   int FI) const {
   unsigned Flags = 0;
   for (unsigned i = 0, e = Ops.size(); i != e; ++i)
     if (MI->getOperand(Ops[i]).isDef())
@@ -191,34 +236,56 @@ TargetInstrInfo::foldMemoryOperand(MachineFunction &MF,
     else
       Flags |= MachineMemOperand::MOLoad;
 
+  MachineBasicBlock *MBB = MI->getParent();
+  assert(MBB && "foldMemoryOperand needs an inserted instruction");
+  MachineFunction &MF = *MBB->getParent();
+
   // Ask the target to do the actual folding.
-  MachineInstr *NewMI = foldMemoryOperandImpl(MF, MI, Ops, FrameIndex);
-  if (!NewMI) return 0;
+  if (MachineInstr *NewMI = foldMemoryOperandImpl(MF, MI, Ops, FI)) {
+    // Add a memory operand, foldMemoryOperandImpl doesn't do that.
+    assert((!(Flags & MachineMemOperand::MOStore) ||
+            NewMI->getDesc().mayStore()) &&
+           "Folded a def to a non-store!");
+    assert((!(Flags & MachineMemOperand::MOLoad) ||
+            NewMI->getDesc().mayLoad()) &&
+           "Folded a use to a non-load!");
+    const MachineFrameInfo &MFI = *MF.getFrameInfo();
+    assert(MFI.getObjectOffset(FI) != -1);
+    MachineMemOperand *MMO =
+      MF.getMachineMemOperand(PseudoSourceValue::getFixedStack(FI),
+                              Flags, /*Offset=*/0,
+                              MFI.getObjectSize(FI),
+                              MFI.getObjectAlignment(FI));
+    NewMI->addMemOperand(MF, MMO);
 
-  assert((!(Flags & MachineMemOperand::MOStore) ||
-          NewMI->getDesc().mayStore()) &&
-         "Folded a def to a non-store!");
-  assert((!(Flags & MachineMemOperand::MOLoad) ||
-          NewMI->getDesc().mayLoad()) &&
-         "Folded a use to a non-load!");
-  const MachineFrameInfo &MFI = *MF.getFrameInfo();
-  assert(MFI.getObjectOffset(FrameIndex) != -1);
-  MachineMemOperand MMO(PseudoSourceValue::getFixedStack(FrameIndex),
-                        Flags,
-                        MFI.getObjectOffset(FrameIndex),
-                        MFI.getObjectSize(FrameIndex),
-                        MFI.getObjectAlignment(FrameIndex));
-  NewMI->addMemOperand(MF, MMO);
+    // FIXME: change foldMemoryOperandImpl semantics to also insert NewMI.
+    return MBB->insert(MI, NewMI);
+  }
 
-  return NewMI;
+  // Straight COPY may fold as load/store.
+  if (!MI->isCopy() || Ops.size() != 1)
+    return 0;
+
+  const TargetRegisterClass *RC = canFoldCopy(MI, Ops[0]);
+  if (!RC)
+    return 0;
+
+  const MachineOperand &MO = MI->getOperand(1-Ops[0]);
+  MachineBasicBlock::iterator Pos = MI;
+  const TargetRegisterInfo *TRI = MF.getTarget().getRegisterInfo();
+
+  if (Flags == MachineMemOperand::MOStore)
+    storeRegToStackSlot(*MBB, Pos, MO.getReg(), MO.isKill(), FI, RC, TRI);
+  else
+    loadRegFromStackSlot(*MBB, Pos, MO.getReg(), FI, RC, TRI);
+  return --Pos;
 }
 
 /// foldMemoryOperand - Same as the previous version except it allows folding
 /// of any load and store from / to any address, not just from a specific
 /// stack slot.
 MachineInstr*
-TargetInstrInfo::foldMemoryOperand(MachineFunction &MF,
-                                   MachineInstr* MI,
+TargetInstrInfo::foldMemoryOperand(MachineBasicBlock::iterator MI,
                                    const SmallVectorImpl<unsigned> &Ops,
                                    MachineInstr* LoadMI) const {
   assert(LoadMI->getDesc().canFoldAsLoad() && "LoadMI isn't foldable!");
@@ -226,15 +293,129 @@ TargetInstrInfo::foldMemoryOperand(MachineFunction &MF,
   for (unsigned i = 0, e = Ops.size(); i != e; ++i)
     assert(MI->getOperand(Ops[i]).isUse() && "Folding load into def!");
 #endif
+  MachineBasicBlock &MBB = *MI->getParent();
+  MachineFunction &MF = *MBB.getParent();
 
   // Ask the target to do the actual folding.
   MachineInstr *NewMI = foldMemoryOperandImpl(MF, MI, Ops, LoadMI);
   if (!NewMI) return 0;
 
+  NewMI = MBB.insert(MI, NewMI);
+
   // Copy the memoperands from the load to the folded instruction.
-  for (std::list<MachineMemOperand>::iterator I = LoadMI->memoperands_begin(),
-       E = LoadMI->memoperands_end(); I != E; ++I)
-    NewMI->addMemOperand(MF, *I);
+  NewMI->setMemRefs(LoadMI->memoperands_begin(),
+                    LoadMI->memoperands_end());
 
   return NewMI;
+}
+
+bool TargetInstrInfo::
+isReallyTriviallyReMaterializableGeneric(const MachineInstr *MI,
+                                         AliasAnalysis *AA) const {
+  const MachineFunction &MF = *MI->getParent()->getParent();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  const TargetMachine &TM = MF.getTarget();
+  const TargetInstrInfo &TII = *TM.getInstrInfo();
+  const TargetRegisterInfo &TRI = *TM.getRegisterInfo();
+
+  // A load from a fixed stack slot can be rematerialized. This may be
+  // redundant with subsequent checks, but it's target-independent,
+  // simple, and a common case.
+  int FrameIdx = 0;
+  if (TII.isLoadFromStackSlot(MI, FrameIdx) &&
+      MF.getFrameInfo()->isImmutableObjectIndex(FrameIdx))
+    return true;
+
+  const TargetInstrDesc &TID = MI->getDesc();
+
+  // Avoid instructions obviously unsafe for remat.
+  if (TID.hasUnmodeledSideEffects() || TID.isNotDuplicable() ||
+      TID.mayStore())
+    return false;
+
+  // Avoid instructions which load from potentially varying memory.
+  if (TID.mayLoad() && !MI->isInvariantLoad(AA))
+    return false;
+
+  // If any of the registers accessed are non-constant, conservatively assume
+  // the instruction is not rematerializable.
+  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI->getOperand(i);
+    if (!MO.isReg()) continue;
+    unsigned Reg = MO.getReg();
+    if (Reg == 0)
+      continue;
+
+    // Check for a well-behaved physical register.
+    if (TargetRegisterInfo::isPhysicalRegister(Reg)) {
+      if (MO.isUse()) {
+        // If the physreg has no defs anywhere, it's just an ambient register
+        // and we can freely move its uses. Alternatively, if it's allocatable,
+        // it could get allocated to something with a def during allocation.
+        if (!MRI.def_empty(Reg))
+          return false;
+        BitVector AllocatableRegs = TRI.getAllocatableSet(MF, 0);
+        if (AllocatableRegs.test(Reg))
+          return false;
+        // Check for a def among the register's aliases too.
+        for (const unsigned *Alias = TRI.getAliasSet(Reg); *Alias; ++Alias) {
+          unsigned AliasReg = *Alias;
+          if (!MRI.def_empty(AliasReg))
+            return false;
+          if (AllocatableRegs.test(AliasReg))
+            return false;
+        }
+      } else {
+        // A physreg def. We can't remat it.
+        return false;
+      }
+      continue;
+    }
+
+    // Only allow one virtual-register def, and that in the first operand.
+    if (MO.isDef() != (i == 0))
+      return false;
+
+    // For the def, it should be the only def of that register.
+    if (MO.isDef() && (llvm::next(MRI.def_begin(Reg)) != MRI.def_end() ||
+                       MRI.isLiveIn(Reg)))
+      return false;
+
+    // Don't allow any virtual-register uses. Rematting an instruction with
+    // virtual register uses would length the live ranges of the uses, which
+    // is not necessarily a good idea, certainly not "trivial".
+    if (MO.isUse())
+      return false;
+  }
+
+  // Everything checked out.
+  return true;
+}
+
+/// isSchedulingBoundary - Test if the given instruction should be
+/// considered a scheduling boundary. This primarily includes labels
+/// and terminators.
+bool TargetInstrInfoImpl::isSchedulingBoundary(const MachineInstr *MI,
+                                               const MachineBasicBlock *MBB,
+                                               const MachineFunction &MF) const{
+  // Terminators and labels can't be scheduled around.
+  if (MI->getDesc().isTerminator() || MI->isLabel())
+    return true;
+
+  // Don't attempt to schedule around any instruction that defines
+  // a stack-oriented pointer, as it's unlikely to be profitable. This
+  // saves compile time, because it doesn't require every single
+  // stack slot reference to depend on the instruction that does the
+  // modification.
+  const TargetLowering &TLI = *MF.getTarget().getTargetLowering();
+  if (MI->definesRegister(TLI.getStackPointerRegisterToSaveRestore()))
+    return true;
+
+  return false;
+}
+
+// Default implementation of CreateTargetPostRAHazardRecognizer.
+ScheduleHazardRecognizer *TargetInstrInfoImpl::
+CreateTargetPostRAHazardRecognizer(const InstrItineraryData &II) const {
+  return (ScheduleHazardRecognizer *)new PostRAHazardRecognizer(II);
 }

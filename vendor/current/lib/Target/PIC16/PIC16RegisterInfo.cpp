@@ -35,13 +35,6 @@ getCalleeSavedRegs(const MachineFunction *MF) const {
   return CalleeSavedRegs;
 }
 
-// PIC16 Callee Saved Reg Classes
-const TargetRegisterClass* const*
-PIC16RegisterInfo::getCalleeSavedRegClasses(const MachineFunction *MF) const {
-  static const TargetRegisterClass * const CalleeSavedRegClasses[] = { 0 };
-  return CalleeSavedRegClasses;
-}
-
 BitVector PIC16RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   return Reserved;
@@ -54,7 +47,7 @@ bool PIC16RegisterInfo::hasFP(const MachineFunction &MF) const {
 void PIC16RegisterInfo::
 eliminateFrameIndex(MachineBasicBlock::iterator II, int SPAdj,
                     RegScavenger *RS) const
-{    /* NOT YET IMPLEMENTED */  }
+{ /* NOT YET IMPLEMENTED */ }
 
 void PIC16RegisterInfo::emitPrologue(MachineFunction &MF) const
 {    /* NOT YET IMPLEMENTED */  }
@@ -69,7 +62,7 @@ getDwarfRegNum(unsigned RegNum, bool isEH) const {
   return -1;
 }
 
-unsigned PIC16RegisterInfo::getFrameRegister(MachineFunction &MF) const {
+unsigned PIC16RegisterInfo::getFrameRegister(const MachineFunction &MF) const {
   llvm_unreachable("PIC16 Does not have any frame register");
   return 0;
 }

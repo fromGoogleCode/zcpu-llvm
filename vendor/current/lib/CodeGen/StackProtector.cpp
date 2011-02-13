@@ -37,7 +37,7 @@ SSPBufferSize("stack-protector-buffer-size", cl::init(8),
                        "stack protection"));
 
 namespace {
-  class VISIBILITY_HIDDEN StackProtector : public FunctionPass {
+  class StackProtector : public FunctionPass {
     /// TLI - Keep a pointer of a TargetLowering to consult for determining
     /// target type sizes.
     const TargetLowering *TLI;
@@ -62,17 +62,17 @@ namespace {
     bool RequiresStackProtector() const;
   public:
     static char ID;             // Pass identification, replacement for typeid.
-    StackProtector() : FunctionPass(&ID), TLI(0) {}
+    StackProtector() : FunctionPass(ID), TLI(0) {}
     StackProtector(const TargetLowering *tli)
-      : FunctionPass(&ID), TLI(tli) {}
+      : FunctionPass(ID), TLI(tli) {}
 
     virtual bool runOnFunction(Function &Fn);
   };
 } // end anonymous namespace
 
 char StackProtector::ID = 0;
-static RegisterPass<StackProtector>
-X("stack-protector", "Insert stack protectors");
+INITIALIZE_PASS(StackProtector, "stack-protector",
+                "Insert stack protectors", false, false);
 
 FunctionPass *llvm::createStackProtectorPass(const TargetLowering *tli) {
   return new StackProtector(tli);
@@ -111,11 +111,16 @@ bool StackProtector::RequiresStackProtector() const {
           // protectors.
           return true;
 
-        if (const ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType()))
+        if (const ArrayType *AT = dyn_cast<ArrayType>(AI->getAllocatedType())) {
+          // We apparently only care about character arrays.
+          if (!AT->getElementType()->isIntegerTy(8))
+            continue;
+
           // If an array has more than SSPBufferSize bytes of allocated space,
           // then we emit stack protectors.
           if (SSPBufferSize <= TD->getTypeAllocSize(AT))
             return true;
+        }
       }
   }
 
@@ -131,7 +136,7 @@ bool StackProtector::RequiresStackProtector() const {
 bool StackProtector::InsertStackProtectors() {
   BasicBlock *FailBB = 0;       // The basic block to jump to if check fails.
   AllocaInst *AI = 0;           // Place on stack that stores the stack guard.
-  Constant *StackGuardVar = 0;  // The stack guard variable.
+  Value *StackGuardVar = 0;  // The stack guard variable.
 
   for (Function::iterator I = F->begin(), E = F->end(); I != E; ) {
     BasicBlock *BB = I++;
@@ -148,9 +153,17 @@ bool StackProtector::InsertStackProtectors() {
       //     StackGuard = load __stack_chk_guard
       //     call void @llvm.stackprotect.create(StackGuard, StackGuardSlot)
       // 
-      PointerType *PtrTy = PointerType::getUnqual(
-          Type::getInt8Ty(RI->getContext()));
-      StackGuardVar = M->getOrInsertGlobal("__stack_chk_guard", PtrTy);
+      const PointerType *PtrTy = Type::getInt8PtrTy(RI->getContext());
+      unsigned AddressSpace, Offset;
+      if (TLI->getStackCookieLocation(AddressSpace, Offset)) {
+        Constant *OffsetVal =
+          ConstantInt::get(Type::getInt32Ty(RI->getContext()), Offset);
+        
+        StackGuardVar = ConstantExpr::getIntToPtr(OffsetVal,
+                                      PointerType::get(PtrTy, AddressSpace));
+      } else {
+        StackGuardVar = M->getOrInsertGlobal("__stack_chk_guard", PtrTy); 
+      }
 
       BasicBlock &Entry = F->getEntryBlock();
       Instruction *InsPt = &Entry.front();

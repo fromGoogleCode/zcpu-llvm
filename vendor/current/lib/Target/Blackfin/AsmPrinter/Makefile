@@ -1,4 +1,4 @@
-##===- lib/Target/Blackfin/Makefile ------------------------*- Makefile -*-===##
+##===- lib/Target/Blackfin/AsmPrinter/Makefile -------------*- Makefile -*-===##
 #
 #                     The LLVM Compiler Infrastructure
 #
@@ -11,6 +11,6 @@ LIBRARYNAME = LLVMBlackfinAsmPrinter
 
 # Hack: we need to include 'main' Blackfin target directory to grab private
 # headers
-CPPFLAGS = -I$(PROJ_OBJ_DIR)/.. -I$(PROJ_SRC_DIR)/..
+CPP.Flags += -I$(PROJ_OBJ_DIR)/.. -I$(PROJ_SRC_DIR)/..
 
 include $(LEVEL)/Makefile.common

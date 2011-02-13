@@ -1,5 +1,5 @@
-; RUN: llvm-as < %s | llc -mtriple=i386-apple-darwin -mattr=+sse2 -disable-fp-elim | grep movss | count 1
-; RUN: llvm-as < %s | llc -mtriple=i386-apple-darwin -mattr=+sse2 -disable-fp-elim -stats |& grep {Number of re-materialization} | grep 1
+; RUN: llc < %s -mtriple=i386-apple-darwin -mattr=+sse2 -disable-fp-elim | grep movss | count 1
+; RUN: llc < %s -mtriple=i386-apple-darwin -mattr=+sse2 -disable-fp-elim -stats |& grep {Number of re-materialization} | grep 1
 
 	%struct..0objc_object = type opaque
 	%struct.OhBoy = type {  }
@@ -19,7 +19,7 @@ bb33:		; preds = %entry
 	br i1 %tmp35, label %bb38, label %bb87.preheader
 bb38:		; preds = %bb33
 	%tmp53 = add i32 %tmp19, %delta		; <i32> [#uses=2]
-	br i1 false, label %bb50, label %bb43
+	br label %bb43
 bb43:		; preds = %bb38
 	store i32 %tmp53, i32* null, align 4
 	ret void

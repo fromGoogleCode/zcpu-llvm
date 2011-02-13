@@ -124,7 +124,7 @@ namespace llvm {
     }
     
     void *getOpaqueValue() const { return Val.getOpaqueValue(); }
-    static PointerUnion getFromOpaqueValue(void *VP) {
+    static inline PointerUnion getFromOpaqueValue(void *VP) {
       PointerUnion V;
       V.Val = ValTy::getFromOpaqueValue(VP);
       return V;
@@ -186,8 +186,9 @@ namespace llvm {
     int is() const {
       // Is it PT1/PT2?
       if (::llvm::getPointerUnionTypeNum<PT1, PT2>((T*)0) != -1)
-        return Val.is<InnerUnion>() && Val.get<InnerUnion>().is<T>();
-      return Val.is<T>();
+        return Val.template is<InnerUnion>() && 
+               Val.template get<InnerUnion>().template is<T>();
+      return Val.template is<T>();
     }
     
     /// get<T>() - Return the value of the specified pointer type. If the
@@ -197,9 +198,9 @@ namespace llvm {
       assert(is<T>() && "Invalid accessor called");
       // Is it PT1/PT2?
       if (::llvm::getPointerUnionTypeNum<PT1, PT2>((T*)0) != -1)
-        return Val.get<InnerUnion>().get<T>();
+        return Val.template get<InnerUnion>().template get<T>();
       
-      return Val.get<T>();
+      return Val.template get<T>();
     }
     
     /// dyn_cast<T>() - If the current value is of the specified pointer type,
@@ -226,7 +227,7 @@ namespace llvm {
     }
     
     void *getOpaqueValue() const { return Val.getOpaqueValue(); }
-    static PointerUnion3 getFromOpaqueValue(void *VP) {
+    static inline PointerUnion3 getFromOpaqueValue(void *VP) {
       PointerUnion3 V;
       V.Val = ValTy::getFromOpaqueValue(VP);
       return V;
@@ -291,8 +292,10 @@ namespace llvm {
     int is() const {
       // Is it PT1/PT2?
       if (::llvm::getPointerUnionTypeNum<PT1, PT2>((T*)0) != -1)
-        return Val.is<InnerUnion1>() && Val.get<InnerUnion1>().is<T>();
-      return Val.is<InnerUnion2>() && Val.get<InnerUnion2>().is<T>();
+        return Val.template is<InnerUnion1>() && 
+               Val.template get<InnerUnion1>().template is<T>();
+      return Val.template is<InnerUnion2>() && 
+             Val.template get<InnerUnion2>().template is<T>();
     }
     
     /// get<T>() - Return the value of the specified pointer type. If the
@@ -302,9 +305,9 @@ namespace llvm {
       assert(is<T>() && "Invalid accessor called");
       // Is it PT1/PT2?
       if (::llvm::getPointerUnionTypeNum<PT1, PT2>((T*)0) != -1)
-        return Val.get<InnerUnion1>().get<T>();
+        return Val.template get<InnerUnion1>().template get<T>();
       
-      return Val.get<InnerUnion2>().get<T>();
+      return Val.template get<InnerUnion2>().template get<T>();
     }
     
     /// dyn_cast<T>() - If the current value is of the specified pointer type,
@@ -335,7 +338,7 @@ namespace llvm {
     }
     
     void *getOpaqueValue() const { return Val.getOpaqueValue(); }
-    static PointerUnion4 getFromOpaqueValue(void *VP) {
+    static inline PointerUnion4 getFromOpaqueValue(void *VP) {
       PointerUnion4 V;
       V.Val = ValTy::getFromOpaqueValue(VP);
       return V;

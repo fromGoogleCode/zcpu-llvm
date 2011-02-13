@@ -15,10 +15,11 @@
 
 #include "LegalizeTypes.h"
 #include "llvm/CallingConv.h"
+#include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
 static cl::opt<bool>
@@ -63,8 +64,12 @@ void DAGTypeLegalizer::PerformExpensiveChecks() {
   // The final node obtained by mapping by ReplacedValues is not marked NewNode.
   // Note that ReplacedValues should be applied iteratively.
 
-  // Note that the ReplacedValues map may also map deleted nodes.  By iterating
-  // over the DAG we only consider non-deleted nodes.
+  // Note that the ReplacedValues map may also map deleted nodes (by iterating
+  // over the DAG we never dereference deleted nodes).  This means that it may
+  // also map nodes marked NewNode if the deallocated memory was reallocated as
+  // another node, and that new node was not seen by the LegalizeTypes machinery
+  // (for example because it was created but not used).  In general, we cannot
+  // distinguish between new nodes and deleted nodes.
   SmallVector<SDNode*, 16> NewNodes;
   for (SelectionDAG::allnodes_iterator I = DAG.allnodes_begin(),
        E = DAG.allnodes_end(); I != E; ++I) {
@@ -113,43 +118,47 @@ void DAGTypeLegalizer::PerformExpensiveChecks() {
         Mapped |= 128;
 
       if (I->getNodeId() != Processed) {
-        if (Mapped != 0) {
-          cerr << "Unprocessed value in a map!";
+        // Since we allow ReplacedValues to map deleted nodes, it may map nodes
+        // marked NewNode too, since a deleted node may have been reallocated as
+        // another node that has not been seen by the LegalizeTypes machinery.
+        if ((I->getNodeId() == NewNode && Mapped > 1) ||
+            (I->getNodeId() != NewNode && Mapped != 0)) {
+          dbgs() << "Unprocessed value in a map!";
           Failed = true;
         }
       } else if (isTypeLegal(Res.getValueType()) || IgnoreNodeResults(I)) {
         if (Mapped > 1) {
-          cerr << "Value with legal type was transformed!";
+          dbgs() << "Value with legal type was transformed!";
           Failed = true;
         }
       } else {
         if (Mapped == 0) {
-          cerr << "Processed value not in any map!";
+          dbgs() << "Processed value not in any map!";
           Failed = true;
         } else if (Mapped & (Mapped - 1)) {
-          cerr << "Value in multiple maps!";
+          dbgs() << "Value in multiple maps!";
           Failed = true;
         }
       }
 
       if (Failed) {
         if (Mapped & 1)
-          cerr << " ReplacedValues";
+          dbgs() << " ReplacedValues";
         if (Mapped & 2)
-          cerr << " PromotedIntegers";
+          dbgs() << " PromotedIntegers";
         if (Mapped & 4)
-          cerr << " SoftenedFloats";
+          dbgs() << " SoftenedFloats";
         if (Mapped & 8)
-          cerr << " ScalarizedVectors";
+          dbgs() << " ScalarizedVectors";
         if (Mapped & 16)
-          cerr << " ExpandedIntegers";
+          dbgs() << " ExpandedIntegers";
         if (Mapped & 32)
-          cerr << " ExpandedFloats";
+          dbgs() << " ExpandedFloats";
         if (Mapped & 64)
-          cerr << " SplitVectors";
+          dbgs() << " SplitVectors";
         if (Mapped & 128)
-          cerr << " WidenedVectors";
-        cerr << "\n";
+          dbgs() << " WidenedVectors";
+        dbgs() << "\n";
         llvm_unreachable(0);
       }
     }
@@ -319,16 +328,12 @@ ScanOperands:
         continue;
 
       // The node morphed - this is equivalent to legalizing by replacing every
-      // value of N with the corresponding value of M.  So do that now.  However
-      // there is no need to remember the replacement - morphing will make sure
-      // it is never used non-trivially.
+      // value of N with the corresponding value of M.  So do that now.
       assert(N->getNumValues() == M->getNumValues() &&
              "Node morphing changed the number of results!");
       for (unsigned i = 0, e = N->getNumValues(); i != e; ++i)
-        // Replacing the value takes care of remapping the new value.  Do the
-        // replacement without recording it in ReplacedValues.  This does not
-        // expunge From but that is fine - it is not really a new node.
-        ReplaceValueWithHelper(SDValue(N, i), SDValue(M, i));
+        // Replacing the value takes care of remapping the new value.
+        ReplaceValueWith(SDValue(N, i), SDValue(M, i));
       assert(N->getNodeId() == NewNode && "Unexpected node state!");
       // The node continues to live on as part of the NewNode fungus that
       // grows on top of the useful nodes.  Nothing more needs to be done
@@ -337,7 +342,7 @@ ScanOperands:
     }
 
     if (i == NumOperands) {
-      DEBUG(cerr << "Legally typed node: "; N->dump(&DAG); cerr << "\n");
+      DEBUG(dbgs() << "Legally typed node: "; N->dump(&DAG); dbgs() << "\n");
     }
     }
 NodeDone:
@@ -406,7 +411,7 @@ NodeDone:
     if (!IgnoreNodeResults(I))
       for (unsigned i = 0, NumVals = I->getNumValues(); i < NumVals; ++i)
         if (!isTypeLegal(I->getValueType(i))) {
-          cerr << "Result type " << i << " illegal!\n";
+          dbgs() << "Result type " << i << " illegal!\n";
           Failed = true;
         }
 
@@ -414,24 +419,24 @@ NodeDone:
     for (unsigned i = 0, NumOps = I->getNumOperands(); i < NumOps; ++i)
       if (!IgnoreNodeResults(I->getOperand(i).getNode()) &&
           !isTypeLegal(I->getOperand(i).getValueType())) {
-        cerr << "Operand type " << i << " illegal!\n";
+        dbgs() << "Operand type " << i << " illegal!\n";
         Failed = true;
       }
 
     if (I->getNodeId() != Processed) {
        if (I->getNodeId() == NewNode)
-         cerr << "New node not analyzed?\n";
+         dbgs() << "New node not analyzed?\n";
        else if (I->getNodeId() == Unanalyzed)
-         cerr << "Unanalyzed node not noticed?\n";
+         dbgs() << "Unanalyzed node not noticed?\n";
        else if (I->getNodeId() > 0)
-         cerr << "Operand not processed?\n";
+         dbgs() << "Operand not processed?\n";
        else if (I->getNodeId() == ReadyToProcess)
-         cerr << "Not added to worklist?\n";
+         dbgs() << "Not added to worklist?\n";
        Failed = true;
     }
 
     if (Failed) {
-      I->dump(&DAG); cerr << "\n";
+      I->dump(&DAG); dbgs() << "\n";
       llvm_unreachable(0);
     }
   }
@@ -480,15 +485,14 @@ SDNode *DAGTypeLegalizer::AnalyzeNewNode(SDNode *N) {
       NewOps.push_back(Op);
     } else if (Op != OrigOp) {
       // This is the first operand to change - add all operands so far.
-      NewOps.insert(NewOps.end(), N->op_begin(), N->op_begin() + i);
+      NewOps.append(N->op_begin(), N->op_begin() + i);
       NewOps.push_back(Op);
     }
   }
 
   // Some operands changed - update the node.
   if (!NewOps.empty()) {
-    SDNode *M = DAG.UpdateNodeOperands(SDValue(N, 0), &NewOps[0],
-                                       NewOps.size()).getNode();
+    SDNode *M = DAG.UpdateNodeOperands(N, &NewOps[0], NewOps.size());
     if (M != N) {
       // The node morphed into a different node.  Normally for this to happen
       // the original node would have to be marked NewNode.  However this can
@@ -622,8 +626,7 @@ void DAGTypeLegalizer::RemapValue(SDValue &N) {
 namespace {
   /// NodeUpdateListener - This class is a DAGUpdateListener that listens for
   /// updates to nodes and recomputes their ready state.
-  class VISIBILITY_HIDDEN NodeUpdateListener :
-    public SelectionDAG::DAGUpdateListener {
+  class NodeUpdateListener : public SelectionDAG::DAGUpdateListener {
     DAGTypeLegalizer &DTL;
     SmallSetVector<SDNode*, 16> &NodesToAnalyze;
   public:
@@ -666,73 +669,64 @@ namespace {
 }
 
 
-/// ReplaceValueWithHelper - Internal helper for ReplaceValueWith.  Updates the
-/// DAG causing any uses of From to use To instead, but without expunging From
-/// or recording the replacement in ReplacedValues.  Do not call directly unless
-/// you really know what you are doing!
-void DAGTypeLegalizer::ReplaceValueWithHelper(SDValue From, SDValue To) {
+/// ReplaceValueWith - The specified value was legalized to the specified other
+/// value.  Update the DAG and NodeIds replacing any uses of From to use To
+/// instead.
+void DAGTypeLegalizer::ReplaceValueWith(SDValue From, SDValue To) {
   assert(From.getNode() != To.getNode() && "Potential legalization loop!");
 
   // If expansion produced new nodes, make sure they are properly marked.
+  ExpungeNode(From.getNode());
   AnalyzeNewValue(To); // Expunges To.
 
   // Anything that used the old node should now use the new one.  Note that this
   // can potentially cause recursive merging.
   SmallSetVector<SDNode*, 16> NodesToAnalyze;
   NodeUpdateListener NUL(*this, NodesToAnalyze);
-  DAG.ReplaceAllUsesOfValueWith(From, To, &NUL);
+  do {
+    DAG.ReplaceAllUsesOfValueWith(From, To, &NUL);
 
-  // Process the list of nodes that need to be reanalyzed.
-  while (!NodesToAnalyze.empty()) {
-    SDNode *N = NodesToAnalyze.back();
-    NodesToAnalyze.pop_back();
-    if (N->getNodeId() != DAGTypeLegalizer::NewNode)
-      // The node was analyzed while reanalyzing an earlier node - it is safe to
-      // skip.  Note that this is not a morphing node - otherwise it would still
-      // be marked NewNode.
-      continue;
+    // The old node may still be present in a map like ExpandedIntegers or
+    // PromotedIntegers.  Inform maps about the replacement.
+    ReplacedValues[From] = To;
 
-    // Analyze the node's operands and recalculate the node ID.
-    SDNode *M = AnalyzeNewNode(N);
-    if (M != N) {
-      // The node morphed into a different node.  Make everyone use the new node
-      // instead.
-      assert(M->getNodeId() != NewNode && "Analysis resulted in NewNode!");
-      assert(N->getNumValues() == M->getNumValues() &&
-             "Node morphing changed the number of results!");
-      for (unsigned i = 0, e = N->getNumValues(); i != e; ++i) {
-        SDValue OldVal(N, i);
-        SDValue NewVal(M, i);
-        if (M->getNodeId() == Processed)
-          RemapValue(NewVal);
-        DAG.ReplaceAllUsesOfValueWith(OldVal, NewVal, &NUL);
+    // Process the list of nodes that need to be reanalyzed.
+    while (!NodesToAnalyze.empty()) {
+      SDNode *N = NodesToAnalyze.back();
+      NodesToAnalyze.pop_back();
+      if (N->getNodeId() != DAGTypeLegalizer::NewNode)
+        // The node was analyzed while reanalyzing an earlier node - it is safe
+        // to skip.  Note that this is not a morphing node - otherwise it would
+        // still be marked NewNode.
+        continue;
+
+      // Analyze the node's operands and recalculate the node ID.
+      SDNode *M = AnalyzeNewNode(N);
+      if (M != N) {
+        // The node morphed into a different node.  Make everyone use the new
+        // node instead.
+        assert(M->getNodeId() != NewNode && "Analysis resulted in NewNode!");
+        assert(N->getNumValues() == M->getNumValues() &&
+               "Node morphing changed the number of results!");
+        for (unsigned i = 0, e = N->getNumValues(); i != e; ++i) {
+          SDValue OldVal(N, i);
+          SDValue NewVal(M, i);
+          if (M->getNodeId() == Processed)
+            RemapValue(NewVal);
+          DAG.ReplaceAllUsesOfValueWith(OldVal, NewVal, &NUL);
+        }
+        // The original node continues to exist in the DAG, marked NewNode.
       }
-      // The original node continues to exist in the DAG, marked NewNode.
     }
-  }
-}
-
-/// ReplaceValueWith - The specified value was legalized to the specified other
-/// value.  Update the DAG and NodeIds replacing any uses of From to use To
-/// instead.
-void DAGTypeLegalizer::ReplaceValueWith(SDValue From, SDValue To) {
-  assert(From.getNode()->getNodeId() == ReadyToProcess &&
-         "Only the node being processed may be remapped!");
-
-  // If expansion produced new nodes, make sure they are properly marked.
-  ExpungeNode(From.getNode());
-  AnalyzeNewValue(To); // Expunges To.
-
-  // The old node may still be present in a map like ExpandedIntegers or
-  // PromotedIntegers.  Inform maps about the replacement.
-  ReplacedValues[From] = To;
-
-  // Do the replacement.
-  ReplaceValueWithHelper(From, To);
+    // When recursively update nodes with new nodes, it is possible to have
+    // new uses of From due to CSE. If this happens, replace the new uses of
+    // From with To.
+  } while (!From.use_empty());
 }
 
 void DAGTypeLegalizer::SetPromotedInteger(SDValue Op, SDValue Result) {
-  assert(Result.getValueType() == TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
+  assert(Result.getValueType() ==
+         TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
          "Invalid type for promoted integer");
   AnalyzeNewValue(Result);
 
@@ -742,7 +736,8 @@ void DAGTypeLegalizer::SetPromotedInteger(SDValue Op, SDValue Result) {
 }
 
 void DAGTypeLegalizer::SetSoftenedFloat(SDValue Op, SDValue Result) {
-  assert(Result.getValueType() == TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
+  assert(Result.getValueType() ==
+         TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
          "Invalid type for softened float");
   AnalyzeNewValue(Result);
 
@@ -773,7 +768,8 @@ void DAGTypeLegalizer::GetExpandedInteger(SDValue Op, SDValue &Lo,
 
 void DAGTypeLegalizer::SetExpandedInteger(SDValue Op, SDValue Lo,
                                           SDValue Hi) {
-  assert(Lo.getValueType() == TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
+  assert(Lo.getValueType() ==
+         TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
          Hi.getValueType() == Lo.getValueType() &&
          "Invalid type for expanded integer");
   // Lo/Hi may have been newly allocated, if so, add nodeid's as relevant.
@@ -799,7 +795,8 @@ void DAGTypeLegalizer::GetExpandedFloat(SDValue Op, SDValue &Lo,
 
 void DAGTypeLegalizer::SetExpandedFloat(SDValue Op, SDValue Lo,
                                         SDValue Hi) {
-  assert(Lo.getValueType() == TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
+  assert(Lo.getValueType() ==
+         TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
          Hi.getValueType() == Lo.getValueType() &&
          "Invalid type for expanded float");
   // Lo/Hi may have been newly allocated, if so, add nodeid's as relevant.
@@ -843,7 +840,8 @@ void DAGTypeLegalizer::SetSplitVector(SDValue Op, SDValue Lo,
 }
 
 void DAGTypeLegalizer::SetWidenedVector(SDValue Op, SDValue Result) {
-  assert(Result.getValueType() == TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
+  assert(Result.getValueType() ==
+         TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
          "Invalid type for widened vector");
   AnalyzeNewValue(Result);
 
@@ -882,9 +880,10 @@ SDValue DAGTypeLegalizer::CreateStackStoreLoad(SDValue Op,
   // the source and destination types.
   SDValue StackPtr = DAG.CreateStackTemporary(Op.getValueType(), DestVT);
   // Emit a store to the stack slot.
-  SDValue Store = DAG.getStore(DAG.getEntryNode(), dl, Op, StackPtr, NULL, 0);
+  SDValue Store = DAG.getStore(DAG.getEntryNode(), dl, Op, StackPtr, NULL, 0,
+                               false, false, 0);
   // Result is a load from the stack slot.
-  return DAG.getLoad(DestVT, dl, Store, StackPtr, NULL, 0);
+  return DAG.getLoad(DestVT, dl, Store, StackPtr, NULL, 0, false, false, 0);
 }
 
 /// CustomLowerNode - Replace the node's results with custom code provided
@@ -918,6 +917,29 @@ bool DAGTypeLegalizer::CustomLowerNode(SDNode *N, EVT VT, bool LegalizeResult) {
   return true;
 }
 
+
+/// CustomWidenLowerNode - Widen the node's results with custom code provided
+/// by the target and return "true", or do nothing and return "false".
+bool DAGTypeLegalizer::CustomWidenLowerNode(SDNode *N, EVT VT) {
+  // See if the target wants to custom lower this node.
+  if (TLI.getOperationAction(N->getOpcode(), VT) != TargetLowering::Custom)
+    return false;
+
+  SmallVector<SDValue, 8> Results;
+  TLI.ReplaceNodeResults(N, Results, DAG);
+
+  if (Results.empty())
+    // The target didn't want to custom widen lower its result  after all.
+    return false;
+
+  // Update the widening map.
+  assert(Results.size() == N->getNumValues() &&
+         "Custom lowering returned the wrong number of results!");
+  for (unsigned i = 0, e = Results.size(); i != e; ++i)
+    SetWidenedVector(SDValue(N, i), Results[i]);
+  return true;
+}
+
 /// GetSplitDestVTs - Compute the VTs needed for the low/hi parts of a type
 /// which is split into two not necessarily identical pieces.
 void DAGTypeLegalizer::GetSplitDestVTs(EVT InVT, EVT &LoVT, EVT &HiVT) {
@@ -927,7 +949,8 @@ void DAGTypeLegalizer::GetSplitDestVTs(EVT InVT, EVT &LoVT, EVT &HiVT) {
   } else {
     unsigned NumElements = InVT.getVectorNumElements();
     assert(!(NumElements & 1) && "Splitting vector, but not in half!");
-    LoVT = HiVT = EVT::getVectorVT(*DAG.getContext(), InVT.getVectorElementType(), NumElements/2);
+    LoVT = HiVT = EVT::getVectorVT(*DAG.getContext(),
+                                   InVT.getVectorElementType(), NumElements/2);
   }
 }
 
@@ -967,7 +990,8 @@ SDValue DAGTypeLegalizer::JoinIntegers(SDValue Lo, SDValue Hi) {
   DebugLoc dlLo = Lo.getDebugLoc();
   EVT LVT = Lo.getValueType();
   EVT HVT = Hi.getValueType();
-  EVT NVT = EVT::getIntegerVT(*DAG.getContext(), LVT.getSizeInBits() + HVT.getSizeInBits());
+  EVT NVT = EVT::getIntegerVT(*DAG.getContext(),
+                              LVT.getSizeInBits() + HVT.getSizeInBits());
 
   Lo = DAG.getNode(ISD::ZERO_EXTEND, dlLo, NVT, Lo);
   Hi = DAG.getNode(ISD::ANY_EXTEND, dlHi, NVT, Hi);
@@ -1069,7 +1093,8 @@ void DAGTypeLegalizer::SplitInteger(SDValue Op,
 /// type half the size of Op's.
 void DAGTypeLegalizer::SplitInteger(SDValue Op,
                                     SDValue &Lo, SDValue &Hi) {
-  EVT HalfVT = EVT::getIntegerVT(*DAG.getContext(), Op.getValueType().getSizeInBits()/2);
+  EVT HalfVT = EVT::getIntegerVT(*DAG.getContext(),
+                                 Op.getValueType().getSizeInBits()/2);
   SplitInteger(Op, HalfVT, HalfVT, Lo, Hi);
 }
 

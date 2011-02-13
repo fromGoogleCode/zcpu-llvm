@@ -27,6 +27,7 @@
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 
 namespace llvm {
   class RegScavenger;
@@ -35,7 +36,7 @@ namespace llvm {
   class PEI : public MachineFunctionPass {
   public:
     static char ID;
-    PEI() : MachineFunctionPass(&ID) {}
+    PEI() : MachineFunctionPass(ID) {}
 
     const char *getPassName() const {
       return "Prolog/Epilog Insertion & Frame Finalization";
@@ -93,6 +94,11 @@ namespace llvm {
     // functions.
     bool ShrinkWrapThisFunction;
 
+    // Flag to control whether to use the register scavenger to resolve
+    // frame index materialization registers. Set according to
+    // TRI->requiresFrameIndexScavenging() for the curren function.
+    bool FrameIndexVirtualScavenging;
+
 #ifndef NDEBUG
     // Machine function handle.
     MachineFunction* MF;
@@ -123,6 +129,7 @@ namespace llvm {
     void insertCSRSpillsAndRestores(MachineFunction &Fn);
     void calculateFrameObjectOffsets(MachineFunction &Fn);
     void replaceFrameIndices(MachineFunction &Fn);
+    void scavengeFrameVirtualRegs(MachineFunction &Fn);
     void insertPrologEpilogCode(MachineFunction &Fn);
 
     // Initialize DFA sets, called before iterations.

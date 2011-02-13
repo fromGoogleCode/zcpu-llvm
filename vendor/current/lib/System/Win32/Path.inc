@@ -47,7 +47,7 @@ namespace llvm {
 namespace sys {
 const char PathSeparator = ';';
 
-Path::Path(const std::string& p)
+Path::Path(llvm::StringRef p)
   : path(p) {
   FlipBackSlashes(path);
 }
@@ -58,8 +58,8 @@ Path::Path(const char *StrStart, unsigned StrLen)
 }
 
 Path&
-Path::operator=(const std::string &that) {
-  path = that;
+Path::operator=(StringRef that) {
+  path.assign(that.data(), that.size());
   FlipBackSlashes(path);
   return *this;
 }
@@ -126,7 +126,7 @@ Path::isValid() const {
 }
 
 void Path::makeAbsolute() {
-  TCHAR  FullPath[MAX_PATH + 1] = {0}; 
+  TCHAR  FullPath[MAX_PATH + 1] = {0};
   LPTSTR FilePart = NULL;
 
   DWORD RetLength = ::GetFullPathNameA(path.c_str(),
@@ -161,7 +161,7 @@ Path::isAbsolute(const char *NameStart, unsigned NameLen) {
   }
 }
 
-bool 
+bool
 Path::isAbsolute() const {
   // FIXME: This does not handle correctly an absolute path starting from
   // a drive letter or in UNC format.
@@ -174,9 +174,9 @@ Path::isAbsolute() const {
     default:
       return path[0] == '/' || (path[1] == ':' && path[2] == '/');
   }
-} 
+}
 
-static Path *TempDirectory = NULL;
+static Path *TempDirectory;
 
 Path
 Path::GetTemporaryDirectory(std::string* ErrMsg) {
@@ -266,7 +266,7 @@ Path
 Path::GetCurrentDirectory() {
   char pathname[MAX_PATH];
   ::GetCurrentDirectoryA(MAX_PATH,pathname);
-  return Path(pathname);  
+  return Path(pathname);
 }
 
 /// GetMainExecutable - Return the path to the main executable, given the
@@ -281,17 +281,11 @@ Path Path::GetMainExecutable(const char *argv0, void *MainAddr) {
 // FIXME: the above set of functions don't map to Windows very well.
 
 
-bool
-Path::isRootDirectory() const {
-  size_t len = path.size();
-  return len > 0 && path[len-1] == '/';
+StringRef Path::getDirname() const {
+  return getDirnameCharSep(path, "/");
 }
 
-std::string Path::getDirname() const {
-  return getDirnameCharSep(path, '/');
-}
-
-std::string
+StringRef
 Path::getBasename() const {
   // Find the last slash
   size_t slash = path.rfind('/');
@@ -302,12 +296,12 @@ Path::getBasename() const {
 
   size_t dot = path.rfind('.');
   if (dot == std::string::npos || dot < slash)
-    return path.substr(slash);
+    return StringRef(path).substr(slash);
   else
-    return path.substr(slash, dot - slash);
+    return StringRef(path).substr(slash, dot - slash);
 }
 
-std::string
+StringRef
 Path::getSuffix() const {
   // Find the last slash
   size_t slash = path.rfind('/');
@@ -318,9 +312,9 @@ Path::getSuffix() const {
 
   size_t dot = path.rfind('.');
   if (dot == std::string::npos || dot < slash)
-    return std::string();
+    return StringRef("");
   else
-    return path.substr(dot + 1);
+    return StringRef(path).substr(dot + 1);
 }
 
 bool
@@ -357,7 +351,14 @@ Path::canExecute() const {
   return attr != INVALID_FILE_ATTRIBUTES;
 }
 
-std::string
+bool
+Path::isRegularFile() const {
+  if (isDirectory())
+    return false;
+  return true;
+}
+
+StringRef
 Path::getLast() const {
   // Find the last slash
   size_t pos = path.rfind('/');
@@ -371,7 +372,7 @@ Path::getLast() const {
     return path;
 
   // Return everything after the last slash
-  return path.substr(pos+1);
+  return StringRef(path).substr(pos+1);
 }
 
 const FileStatus *
@@ -399,8 +400,10 @@ PathWithStatus::getFileStatus(bool update, std::string *ErrStr) const {
     for (unsigned i = 0; i < path.length(); ++i)
       status.uniqueID += path[i];
 
-    __int64 ft = *reinterpret_cast<__int64*>(&fi.ftLastWriteTime);
-    status.modTime.fromWin32Time(ft);
+    ULARGE_INTEGER ui;
+    ui.LowPart = fi.ftLastWriteTime.dwLowDateTime;
+    ui.HighPart = fi.ftLastWriteTime.dwHighDateTime;
+    status.modTime.fromWin32Time(ui.QuadPart);
 
     status.isDir = fi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
     fsIsValid = true;
@@ -441,7 +444,7 @@ Path::getDirectoryContents(std::set<Path>& result, std::string* ErrMsg) const {
     MakeErrMsg(ErrMsg, path + ": can't get status of file");
     return true;
   }
-    
+
   if (!(fi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
     if (ErrMsg)
       *ErrMsg = path + ": not a directory";
@@ -483,7 +486,7 @@ Path::getDirectoryContents(std::set<Path>& result, std::string* ErrMsg) const {
 }
 
 bool
-Path::set(const std::string& a_path) {
+Path::set(StringRef a_path) {
   if (a_path.empty())
     return false;
   std::string save(path);
@@ -497,7 +500,7 @@ Path::set(const std::string& a_path) {
 }
 
 bool
-Path::appendComponent(const std::string& name) {
+Path::appendComponent(StringRef name) {
   if (name.empty())
     return false;
   std::string save(path);
@@ -529,7 +532,7 @@ Path::eraseComponent() {
 }
 
 bool
-Path::appendSuffix(const std::string& suffix) {
+Path::appendSuffix(StringRef suffix) {
   std::string save(path);
   path.append(".");
   path.append(suffix);
@@ -608,15 +611,17 @@ Path::createDirectoryOnDisk(bool create_parents, std::string* ErrMsg) {
     while (*next) {
       next = strchr(next, '/');
       *next = 0;
-      if (!CreateDirectory(pathname, NULL))
-          return MakeErrMsg(ErrMsg, 
+      if (!CreateDirectory(pathname, NULL) &&
+          GetLastError() != ERROR_ALREADY_EXISTS)
+          return MakeErrMsg(ErrMsg,
             std::string(pathname) + ": Can't create directory: ");
       *next++ = '/';
     }
   } else {
     // Drop trailing slash.
     pathname[len-1] = 0;
-    if (!CreateDirectory(pathname, NULL)) {
+    if (!CreateDirectory(pathname, NULL) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
       return MakeErrMsg(ErrMsg, std::string(pathname) + ": Can't create directory: ");
     }
   }
@@ -640,7 +645,7 @@ Path::eraseFromDisk(bool remove_contents, std::string *ErrStr) const {
   WIN32_FILE_ATTRIBUTE_DATA fi;
   if (!GetFileAttributesEx(path.c_str(), GetFileExInfoStandard, &fi))
     return true;
-    
+
   if (fi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
     // If it doesn't exist, we're done.
     if (!exists())
@@ -697,7 +702,7 @@ Path::eraseFromDisk(bool remove_contents, std::string *ErrStr) const {
 
     pathname[lastchar] = 0;
     if (!RemoveDirectory(pathname))
-      return MakeErrMsg(ErrStr, 
+      return MakeErrMsg(ErrStr,
         std::string(pathname) + ": Can't destroy directory: ");
     return false;
   } else {
@@ -717,7 +722,7 @@ Path::eraseFromDisk(bool remove_contents, std::string *ErrStr) const {
 
 bool Path::getMagicNumber(std::string& Magic, unsigned len) const {
   assert(len < 1024 && "Request for magic string too long");
-  char* buf = (char*) alloca(1 + len);
+  char* buf = reinterpret_cast<char*>(alloca(len));
 
   HANDLE h = CreateFile(path.c_str(),
                         GENERIC_READ,
@@ -736,15 +741,14 @@ bool Path::getMagicNumber(std::string& Magic, unsigned len) const {
   if (!ret || nRead != len)
     return false;
 
-  buf[len] = '\0';
-  Magic = buf;
+  Magic = std::string(buf, len);
   return true;
 }
 
 bool
 Path::renamePathOnDisk(const Path& newName, std::string* ErrMsg) {
   if (!MoveFileEx(path.c_str(), newName.c_str(), MOVEFILE_REPLACE_EXISTING))
-    return MakeErrMsg(ErrMsg, "Can't move '" + path + "' to '" + newName.path 
+    return MakeErrMsg(ErrMsg, "Can't move '" + path + "' to '" + newName.path
         + "': ");
   return false;
 }
@@ -755,7 +759,7 @@ Path::setStatusInfoOnDisk(const FileStatus &si, std::string *ErrMsg) const {
   if (!si.isFile) {
     return true;
   }
-  
+
   HANDLE h = CreateFile(path.c_str(),
                         FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -774,8 +778,11 @@ Path::setStatusInfoOnDisk(const FileStatus &si, std::string *ErrMsg) const {
     return MakeErrMsg(ErrMsg, path + ": GetFileInformationByHandle: ");
   }
 
+  ULARGE_INTEGER ui;
+  ui.QuadPart = si.modTime.toWin32Time();
   FILETIME ft;
-  (uint64_t&)ft = si.modTime.toWin32Time();
+  ft.dwLowDateTime = ui.LowPart;
+  ft.dwHighDateTime = ui.HighPart;
   BOOL ret = SetFileTime(h, NULL, &ft, &ft);
   DWORD err = GetLastError();
   CloseHandle(h);
@@ -808,8 +815,8 @@ CopyFile(const sys::Path &Dest, const sys::Path &Src, std::string* ErrMsg) {
   // Can't use CopyFile macro defined in Windows.h because it would mess up the
   // above line.  We use the expansion it would have in a non-UNICODE build.
   if (!::CopyFileA(Src.c_str(), Dest.c_str(), false))
-    return MakeErrMsg(ErrMsg, "Can't copy '" + Src.toString() +
-               "' to '" + Dest.toString() + "': ");
+    return MakeErrMsg(ErrMsg, "Can't copy '" + Src.str() +
+               "' to '" + Dest.str() + "': ");
   return false;
 }
 

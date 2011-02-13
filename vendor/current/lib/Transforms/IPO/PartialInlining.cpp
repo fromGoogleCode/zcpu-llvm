@@ -21,17 +21,16 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/FunctionUtils.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/CFG.h"
 using namespace llvm;
 
 STATISTIC(NumPartialInlined, "Number of functions partially inlined");
 
 namespace {
-  struct VISIBILITY_HIDDEN PartialInliner : public ModulePass {
+  struct PartialInliner : public ModulePass {
     virtual void getAnalysisUsage(AnalysisUsage &AU) const { }
     static char ID; // Pass identification, replacement for typeid
-    PartialInliner() : ModulePass(&ID) {}
+    PartialInliner() : ModulePass(ID) {}
     
     bool runOnModule(Module& M);
     
@@ -41,14 +40,16 @@ namespace {
 }
 
 char PartialInliner::ID = 0;
-static RegisterPass<PartialInliner> X("partial-inliner", "Partial Inliner");
+INITIALIZE_PASS(PartialInliner, "partial-inliner",
+                "Partial Inliner", false, false);
 
 ModulePass* llvm::createPartialInliningPass() { return new PartialInliner(); }
 
 Function* PartialInliner::unswitchFunction(Function* F) {
   // First, verify that this function is an unswitching candidate...
   BasicBlock* entryBlock = F->begin();
-  if (!isa<BranchInst>(entryBlock->getTerminator()))
+  BranchInst *BR = dyn_cast<BranchInst>(entryBlock->getTerminator());
+  if (!BR || BR->isUnconditional())
     return 0;
   
   BasicBlock* returnBlock = 0;
@@ -66,13 +67,14 @@ Function* PartialInliner::unswitchFunction(Function* F) {
     return 0;
   
   // Clone the function, so that we can hack away on it.
-  DenseMap<const Value*, Value*> ValueMap;
-  Function* duplicateFunction = CloneFunction(F, ValueMap);
+  ValueMap<const Value*, Value*> VMap;
+  Function* duplicateFunction = CloneFunction(F, VMap,
+                                              /*ModuleLevelChanges=*/false);
   duplicateFunction->setLinkage(GlobalValue::InternalLinkage);
   F->getParent()->getFunctionList().push_back(duplicateFunction);
-  BasicBlock* newEntryBlock = cast<BasicBlock>(ValueMap[entryBlock]);
-  BasicBlock* newReturnBlock = cast<BasicBlock>(ValueMap[returnBlock]);
-  BasicBlock* newNonReturnBlock = cast<BasicBlock>(ValueMap[nonReturnBlock]);
+  BasicBlock* newEntryBlock = cast<BasicBlock>(VMap[entryBlock]);
+  BasicBlock* newReturnBlock = cast<BasicBlock>(VMap[returnBlock]);
+  BasicBlock* newNonReturnBlock = cast<BasicBlock>(VMap[nonReturnBlock]);
   
   // Go ahead and update all uses to the duplicate, so that we can just
   // use the inliner functionality when we're done hacking.
@@ -117,18 +119,20 @@ Function* PartialInliner::unswitchFunction(Function* F) {
   DominatorTree DT;
   DT.runOnFunction(*duplicateFunction);
   
-  // Extract the body of the the if.
+  // Extract the body of the if.
   Function* extractedFunction = ExtractCodeRegion(DT, toExtract);
+  
+  InlineFunctionInfo IFI;
   
   // Inline the top-level if test into all callers.
   std::vector<User*> Users(duplicateFunction->use_begin(), 
                            duplicateFunction->use_end());
   for (std::vector<User*>::iterator UI = Users.begin(), UE = Users.end();
        UI != UE; ++UI)
-    if (CallInst* CI = dyn_cast<CallInst>(*UI))
-      InlineFunction(CI);
-    else if (InvokeInst* II = dyn_cast<InvokeInst>(*UI))
-      InlineFunction(II);
+    if (CallInst *CI = dyn_cast<CallInst>(*UI))
+      InlineFunction(CI, IFI);
+    else if (InvokeInst *II = dyn_cast<InvokeInst>(*UI))
+      InlineFunction(II, IFI);
   
   // Ditch the duplicate, since we're done with it, and rewrite all remaining
   // users (function pointers, etc.) back to the original function.
@@ -145,7 +149,7 @@ bool PartialInliner::runOnModule(Module& M) {
   worklist.reserve(M.size());
   for (Module::iterator FI = M.begin(), FE = M.end(); FI != FE; ++FI)
     if (!FI->use_empty() && !FI->isDeclaration())
-    worklist.push_back(&*FI);
+      worklist.push_back(&*FI);
     
   bool changed = false;
   while (!worklist.empty()) {
@@ -157,7 +161,7 @@ bool PartialInliner::runOnModule(Module& M) {
     bool recursive = false;
     for (Function::use_iterator UI = currFunc->use_begin(),
          UE = currFunc->use_end(); UI != UE; ++UI)
-      if (Instruction* I = dyn_cast<Instruction>(UI))
+      if (Instruction* I = dyn_cast<Instruction>(*UI))
         if (I->getParent()->getParent() == currFunc) {
           recursive = true;
           break;

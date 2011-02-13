@@ -1,8 +1,8 @@
-; RUN: llvm-as < %s | llc -march=x86 | not egrep {\\\$4294967289|-7\\(}
-; RUN: llvm-as < %s | llc -march=x86 | egrep {\\\$4294967280|-16\\(}
-; RUN: llvm-as < %s | llc -march=x86-64 | grep {\\-16}
+; RUN: llc < %s -mtriple=i686-linux | not egrep {\\\$4294967289|-7}
+; RUN: llc < %s -mtriple=i686-linux | egrep {\\\$4294967280|-16}
+; RUN: llc < %s -mtriple=x86_64-linux | grep {\\-16}
 
-define void @t() {
+define void @t() nounwind {
 A:
 	br label %entry
 

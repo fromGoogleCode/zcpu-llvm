@@ -1,5 +1,7 @@
-; RUN: llvm-as < %s | opt -analyze -scalar-evolution -disable-output | grep {0 smax}
-; XFAIL: *
+; RUN: opt < %s -analyze -scalar-evolution | FileCheck %s
+
+; CHECK: @f
+; CHECK: Loop %bb16.preheader: backedge-taken count is (-1 + %c.idx.val)
 
 define i32 @f(i32 %c.idx.val) {
 

@@ -2,24 +2,23 @@ add_llvm_library(LLVMScalarOpts
   ADCE.cpp
   BasicBlockPlacement.cpp
   CodeGenPrepare.cpp
-  CondPropagate.cpp
   ConstantProp.cpp
+  CorrelatedValuePropagation.cpp
   DCE.cpp
   DeadStoreElimination.cpp
+  GEPSplitter.cpp
   GVN.cpp
-  GVNPRE.cpp
   IndVarSimplify.cpp
-  InstructionCombining.cpp
   JumpThreading.cpp
   LICM.cpp
   LoopDeletion.cpp
   LoopIndexSplit.cpp
   LoopRotation.cpp
   LoopStrengthReduce.cpp
-  LoopUnroll.cpp
+  LoopUnrollPass.cpp
   LoopUnswitch.cpp
+  LowerAtomic.cpp
   MemCpyOptimizer.cpp
-  PredicateSimplifier.cpp
   Reassociate.cpp
   Reg2Mem.cpp
   SCCP.cpp
@@ -28,6 +27,7 @@ add_llvm_library(LLVMScalarOpts
   SimplifyCFGPass.cpp
   SimplifyHalfPowrLibCalls.cpp
   SimplifyLibCalls.cpp
+  Sink.cpp
   TailDuplication.cpp
   TailRecursionElimination.cpp
   )

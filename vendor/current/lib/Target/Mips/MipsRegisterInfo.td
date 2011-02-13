@@ -1,4 +1,4 @@
-//===- MipsRegisterInfo.td - Mips Register defs -----------------*- C++ -*-===//
+//===- MipsRegisterInfo.td - Mips Register defs ------------*- tablegen -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -17,6 +17,12 @@ class MipsReg<string n> : Register<n> {
   let Namespace = "Mips";
 }
 
+class MipsRegWithSubRegs<string n, list<Register> subregs> 
+  : RegisterWithSubRegs<n, subregs> {
+  field bits<5> Num;
+  let Namespace = "Mips";
+}
+
 // Mips CPU Registers
 class MipsGPRReg<bits<5> num, string n> : MipsReg<n> {
   let Num = num;
@@ -28,9 +34,14 @@ class FPR<bits<5> num, string n> : MipsReg<n> {
 }
 
 // Mips 64-bit (aliased) FPU Registers
-class AFPR<bits<5> num, string n, list<Register> aliases> : MipsReg<n> {
+let Namespace = "Mips" in {
+def sub_fpeven : SubRegIndex;
+def sub_fpodd  : SubRegIndex;
+}
+class AFPR<bits<5> num, string n, list<Register> subregs>
+  : MipsRegWithSubRegs<n, subregs> {
   let Num = num;
-  let Aliases = aliases;
+  let SubRegIndices = [sub_fpeven, sub_fpodd];
 }
 
 //===----------------------------------------------------------------------===//
@@ -232,6 +243,7 @@ def AFGR64 : RegisterClass<"Mips", [f64], 64,
   // Reserved
   D15]>
 {
+  let SubRegClasses = [(FGR32 sub_fpeven, sub_fpodd)];
   let MethodProtos = [{
     iterator allocation_order_end(const MachineFunction &MF) const;
   }];

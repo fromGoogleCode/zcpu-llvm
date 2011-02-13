@@ -18,24 +18,23 @@
 #include "llvm/Module.h"
 #include "llvm/Type.h"
 #include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/InlineCost.h"
 #include "llvm/Support/CallSite.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/InlinerPass.h"
-#include "llvm/Transforms/Utils/InlineCost.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 using namespace llvm;
 
 namespace {
 
-  class VISIBILITY_HIDDEN SimpleInliner : public Inliner {
+  class SimpleInliner : public Inliner {
     // Functions that are never inlined
     SmallPtrSet<const Function*, 16> NeverInline; 
     InlineCostAnalyzer CA;
   public:
-    SimpleInliner() : Inliner(&ID) {}
-    SimpleInliner(int Threshold) : Inliner(&ID, Threshold) {}
+    SimpleInliner() : Inliner(ID) {}
+    SimpleInliner(int Threshold) : Inliner(ID, Threshold) {}
     static char ID; // Pass identification, replacement for typeid
     InlineCost getInlineCost(CallSite CS) {
       return CA.getInlineCost(CS, NeverInline);
@@ -46,13 +45,19 @@ namespace {
     void resetCachedCostInfo(Function *Caller) {
       CA.resetCachedCostInfo(Caller);
     }
+    void growCachedCostInfo(Function* Caller, Function* Callee) {
+      CA.growCachedCostInfo(Caller, Callee);
+    }
     virtual bool doInitialization(CallGraph &CG);
+    void releaseMemory() {
+      CA.clear();
+    }
   };
 }
 
 char SimpleInliner::ID = 0;
-static RegisterPass<SimpleInliner>
-X("inline", "Function Integration/Inlining");
+INITIALIZE_PASS(SimpleInliner, "inline",
+                "Function Integration/Inlining", false, false);
 
 Pass *llvm::createFunctionInliningPass() { return new SimpleInliner(); }
 

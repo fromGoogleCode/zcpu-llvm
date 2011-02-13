@@ -13,11 +13,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/FileUtilities.h"
-#include "llvm/System/Path.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/System/Path.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringExtras.h"
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
@@ -51,7 +51,15 @@ static const char *BackupNumber(const char *Pos, const char *FirstChar) {
   if (!isNumberChar(*Pos)) return Pos;
 
   // Otherwise, return to the start of the number.
+  bool HasPeriod = false;
   while (Pos > FirstChar && isNumberChar(Pos[-1])) {
+    // Backup over at most one period.
+    if (Pos[-1] == '.') {
+      if (HasPeriod)
+        break;
+      HasPeriod = true;
+    }
+
     --Pos;
     if (Pos > FirstChar && isSignedChar(Pos[0]) && !isExponentChar(Pos[-1]))
       break;
@@ -139,11 +147,11 @@ static bool CompareNumbers(const char *&F1P, const char *&F2P,
       Diff = 0;  // Both zero.
     if (Diff > RelTolerance) {
       if (ErrorMsg) {
-        *ErrorMsg = "Compared: " + ftostr(V1) + " and " + ftostr(V2) + "\n";
-        *ErrorMsg += "abs. diff = " + ftostr(std::abs(V1-V2)) + 
-                     " rel.diff = " + ftostr(Diff) + "\n";
-        *ErrorMsg += "Out of tolerance: rel/abs: " + ftostr(RelTolerance) +
-                     "/" + ftostr(AbsTolerance);
+        raw_string_ostream(*ErrorMsg)
+          << "Compared: " << V1 << " and " << V2 << '\n'
+          << "abs. diff = " << std::abs(V1-V2) << " rel.diff = " << Diff << '\n'
+          << "Out of tolerance: rel/abs: " << RelTolerance << '/'
+          << AbsTolerance;
       }
       return true;
     }
@@ -204,16 +212,16 @@ int llvm::DiffFilesWithTolerance(const sys::PathWithStatus &FileA,
   const char *F1P = File1Start;
   const char *F2P = File2Start;
 
-  if (A_size == B_size) {
-    // Are the buffers identical?  Common case: Handle this efficiently.
-    if (std::memcmp(File1Start, File2Start, A_size) == 0)
-      return 0;
+  // Are the buffers identical?  Common case: Handle this efficiently.
+  if (A_size == B_size &&
+      std::memcmp(File1Start, File2Start, A_size) == 0)
+    return 0;
 
-    if (AbsTol == 0 && RelTol == 0) {
-      if (Error)
-        *Error = "Files differ without tolerance allowance";
-      return 1;   // Files different!
-    }
+  // Otherwise, we are done a tolerances are set.
+  if (AbsTol == 0 && RelTol == 0) {
+    if (Error)
+      *Error = "Files differ without tolerance allowance";
+    return 1;   // Files different!
   }
 
   bool CompareFailed = false;

@@ -98,6 +98,10 @@ public:
   /// getRegsUsed - return all registers currently in use in used.
   void getRegsUsed(BitVector &used, bool includeReserved);
 
+  /// getRegsAvailable - Return all available registers in the register class
+  /// in Mask.
+  void getRegsAvailable(const TargetRegisterClass *RC, BitVector &Mask);
+
   /// FindUnusedReg - Find a unused register of the specified register class.
   /// Return 0 if none is found.
   unsigned FindUnusedReg(const TargetRegisterClass *RegClass) const;
@@ -117,11 +121,14 @@ public:
     return scavengeRegister(RegClass, MBBI, SPAdj);
   }
 
+  /// setUsed - Tell the scavenger a register is used.
+  ///
+  void setUsed(unsigned Reg);
 private:
   /// isReserved - Returns true if a register is reserved. It is never "unused".
   bool isReserved(unsigned Reg) const { return ReservedRegs.test(Reg); }
 
-  /// isUsed / isUsed - Test if a register is currently being used.
+  /// isUsed / isUnused - Test if a register is currently being used.
   ///
   bool isUsed(unsigned Reg) const   { return !RegsAvailable.test(Reg); }
   bool isUnused(unsigned Reg) const { return RegsAvailable.test(Reg); }
@@ -131,7 +138,6 @@ private:
 
   /// setUsed / setUnused - Mark the state of one or a number of registers.
   ///
-  void setUsed(unsigned Reg);
   void setUsed(BitVector &Regs) {
     RegsAvailable &= ~Regs;
   }
@@ -145,7 +151,12 @@ private:
   /// Add Reg and its aliases to BV.
   void addRegWithAliases(BitVector &BV, unsigned Reg);
 
-  unsigned findSurvivorReg(MachineBasicBlock::iterator MI,
+  /// findSurvivorReg - Return the candidate register that is unused for the
+  /// longest after StartMI. UseMI is set to the instruction where the search
+  /// stopped.
+  ///
+  /// No more than InstrLimit instructions are inspected.
+  unsigned findSurvivorReg(MachineBasicBlock::iterator StartMI,
                            BitVector &Candidates,
                            unsigned InstrLimit,
                            MachineBasicBlock::iterator &UseMI);

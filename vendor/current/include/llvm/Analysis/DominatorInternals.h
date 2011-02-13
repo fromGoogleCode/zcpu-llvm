@@ -152,8 +152,9 @@ void Compress(DominatorTreeBase<typename GraphT::NodeType>& DT,
 }
 
 template<class GraphT>
-typename GraphT::NodeType* Eval(DominatorTreeBase<typename GraphT::NodeType>& DT,
-                                typename GraphT::NodeType *V) {
+typename GraphT::NodeType* 
+Eval(DominatorTreeBase<typename GraphT::NodeType>& DT,
+     typename GraphT::NodeType *V) {
   typename DominatorTreeBase<typename GraphT::NodeType>::InfoRec &VInfo =
                                                                      DT.Info[V];
 #if !BALANCE_IDOM_TREE
@@ -262,29 +263,20 @@ void Calculate(DominatorTreeBase<typename GraphTraits<NodeT>::NodeType>& DT,
                                                                      DT.Info[W];
 
     // Step #2: Calculate the semidominators of all vertices
-    bool HasChildOutsideDFS = false;
 
     // initialize the semi dominator to point to the parent node
     WInfo.Semi = WInfo.Parent;
-    for (typename GraphTraits<Inverse<NodeT> >::ChildIteratorType CI =
-         GraphTraits<Inverse<NodeT> >::child_begin(W),
-         E = GraphTraits<Inverse<NodeT> >::child_end(W); CI != E; ++CI) {
-      if (DT.Info.count(*CI)) {  // Only if this predecessor is reachable!
-        unsigned SemiU = DT.Info[Eval<GraphT>(DT, *CI)].Semi;
+    typedef GraphTraits<Inverse<NodeT> > InvTraits;
+    for (typename InvTraits::ChildIteratorType CI =
+         InvTraits::child_begin(W),
+         E = InvTraits::child_end(W); CI != E; ++CI) {
+      typename InvTraits::NodeType *N = *CI;
+      if (DT.Info.count(N)) {  // Only if this predecessor is reachable!
+        unsigned SemiU = DT.Info[Eval<GraphT>(DT, N)].Semi;
         if (SemiU < WInfo.Semi)
           WInfo.Semi = SemiU;
       }
-      else {
-        // if the child has no DFS number it is not post-dominated by any exit, 
-        // and so is the current block.
-        HasChildOutsideDFS = true;
-      }
     }
-
-    // if some child has no DFS number it is not post-dominated by any exit, 
-    // and so is the current block.
-    if (DT.isPostDominator() && HasChildOutsideDFS)
-      WInfo.Semi = 0;
 
     DT.Info[DT.Vertex[WInfo.Semi]].Bucket.push_back(W);
 
@@ -347,15 +339,8 @@ void Calculate(DominatorTreeBase<typename GraphTraits<NodeT>::NodeType>& DT,
   DT.IDoms.clear();
   DT.Info.clear();
   std::vector<typename GraphT::NodeType*>().swap(DT.Vertex);
-  
-  // FIXME: This does not work on PostDomTrees.  It seems likely that this is
-  // due to an error in the algorithm for post-dominators.  This really should
-  // be investigated and fixed at some point.
-  // DT.updateDFSNumbers();
 
-  // Start out with the DFS numbers being invalid.  Let them be computed if
-  // demanded.
-  DT.DFSInfoValid = false;
+  DT.updateDFSNumbers();
 }
 
 }

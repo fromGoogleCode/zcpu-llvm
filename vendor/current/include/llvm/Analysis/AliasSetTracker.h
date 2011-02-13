@@ -20,7 +20,6 @@
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/ValueHandle.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/iterator.h"
 #include "llvm/ADT/ilist.h"
 #include "llvm/ADT/ilist_node.h"
 #include <vector>
@@ -30,7 +29,6 @@ namespace llvm {
 class AliasAnalysis;
 class LoadInst;
 class StoreInst;
-class FreeInst;
 class VAArgInst;
 class AliasSetTracker;
 class AliasSet;
@@ -94,7 +92,8 @@ class AliasSet : public ilist_node<AliasSet> {
   AliasSet *Forward;             // Forwarding pointer.
   AliasSet *Next, *Prev;         // Doubly linked list of AliasSets.
 
-  std::vector<CallSite> CallSites; // All calls & invokes in this alias set.
+  // All calls & invokes in this alias set.
+  std::vector<AssertingVH<Instruction> > CallSites;
 
   // RefCount - Number of nodes pointing to this AliasSet plus the number of
   // AliasSets forwarding to it.
@@ -129,6 +128,11 @@ class AliasSet : public ilist_node<AliasSet> {
       removeFromTracker(AST);
   }
 
+  CallSite getCallSite(unsigned i) const {
+    assert(i < CallSites.size());
+    return CallSite(CallSites[i]);
+  }
+  
 public:
   /// Accessors...
   bool isRef() const { return AccessTy & Refs; }
@@ -155,12 +159,12 @@ public:
   iterator end()   const { return iterator(); }
   bool empty() const { return PtrList == 0; }
 
-  void print(std::ostream &OS) const;
-  void print(std::ostream *OS) const { if (OS) print(*OS); }
+  void print(raw_ostream &OS) const;
   void dump() const;
 
   /// Define an iterator for alias sets... this is just a forward iterator.
-  class iterator : public forward_iterator<PointerRec, ptrdiff_t> {
+  class iterator : public std::iterator<std::forward_iterator_tag,
+                                        PointerRec, ptrdiff_t> {
     PointerRec *CurNode;
   public:
     explicit iterator(PointerRec *CN = 0) : CurNode(CN) {}
@@ -231,7 +235,7 @@ private:
   void addCallSite(CallSite CS, AliasAnalysis &AA);
   void removeCallSite(CallSite CS) {
     for (size_t i = 0, e = CallSites.size(); i != e; ++i)
-      if (CallSites[i].getInstruction() == CS.getInstruction()) {
+      if (CallSites[i] == CS.getInstruction()) {
         CallSites[i] = CallSites.back();
         CallSites.pop_back();
       }
@@ -245,7 +249,7 @@ private:
   bool aliasesCallSite(CallSite CS, AliasAnalysis &AA) const;
 };
 
-inline std::ostream& operator<<(std::ostream &OS, const AliasSet &AS) {
+inline raw_ostream& operator<<(raw_ostream &OS, const AliasSet &AS) {
   AS.print(OS);
   return OS;
 }
@@ -261,11 +265,9 @@ class AliasSetTracker {
     ASTCallbackVH(Value *V, AliasSetTracker *AST = 0);
     ASTCallbackVH &operator=(Value *V);
   };
-  /// ASTCallbackVHDenseMapInfo - Traits to tell DenseMap that ASTCallbackVH
-  /// is not a POD (it needs its destructor called).
-  struct ASTCallbackVHDenseMapInfo : public DenseMapInfo<Value *> {
-    static bool isPod() { return false; }
-  };
+  /// ASTCallbackVHDenseMapInfo - Traits to tell DenseMap that tell us how to
+  /// compare and hash the value handle.
+  struct ASTCallbackVHDenseMapInfo : public DenseMapInfo<Value *> {};
 
   AliasAnalysis &AA;
   ilist<AliasSet> AliasSets;
@@ -299,7 +301,6 @@ public:
   bool add(Value *Ptr, unsigned Size);  // Add a location
   bool add(LoadInst *LI);
   bool add(StoreInst *SI);
-  bool add(FreeInst *FI);
   bool add(VAArgInst *VAAI);
   bool add(CallSite CS);          // Call/Invoke instructions
   bool add(CallInst *CI)   { return add(CallSite(CI)); }
@@ -314,7 +315,6 @@ public:
   bool remove(Value *Ptr, unsigned Size);  // Remove a location
   bool remove(LoadInst *LI);
   bool remove(StoreInst *SI);
-  bool remove(FreeInst *FI);
   bool remove(VAArgInst *VAAI);
   bool remove(CallSite CS);
   bool remove(CallInst *CI)   { return remove(CallSite(CI)); }
@@ -374,8 +374,7 @@ public:
   iterator begin() { return AliasSets.begin(); }
   iterator end()   { return AliasSets.end(); }
 
-  void print(std::ostream &OS) const;
-  void print(std::ostream *OS) const { if (OS) print(*OS); }
+  void print(raw_ostream &OS) const;
   void dump() const;
 
 private:
@@ -403,7 +402,7 @@ private:
   AliasSet *findAliasSetForCallSite(CallSite CS);
 };
 
-inline std::ostream& operator<<(std::ostream &OS, const AliasSetTracker &AST) {
+inline raw_ostream& operator<<(raw_ostream &OS, const AliasSetTracker &AST) {
   AST.print(OS);
   return OS;
 }

@@ -27,9 +27,7 @@ ScheduleDAG::ScheduleDAG(MachineFunction &mf)
   : TM(mf.getTarget()),
     TII(TM.getInstrInfo()),
     TRI(TM.getRegisterInfo()),
-    TLI(TM.getTargetLowering()),
     MF(mf), MRI(mf.getRegInfo()),
-    ConstPool(MF.getConstantPool()),
     EntrySU(), ExitSU() {
 }
 
@@ -41,7 +39,7 @@ void ScheduleDAG::dumpSchedule() const {
     if (SUnit *SU = Sequence[i])
       SU->dump(this);
     else
-      errs() << "**** NOOP ****\n";
+      dbgs() << "**** NOOP ****\n";
   }
 }
 
@@ -60,9 +58,11 @@ void ScheduleDAG::Run(MachineBasicBlock *bb,
 
   Schedule();
 
-  DOUT << "*** Final schedule ***\n";
-  DEBUG(dumpSchedule());
-  DOUT << "\n";
+  DEBUG({
+      dbgs() << "*** Final schedule ***\n";
+      dumpSchedule();
+      dbgs() << '\n';
+    });
 }
 
 /// addPred - This adds the specified edge as a pred of the current node if
@@ -80,13 +80,19 @@ void SUnit::addPred(const SDep &D) {
   SUnit *N = D.getSUnit();
   // Update the bookkeeping.
   if (D.getKind() == SDep::Data) {
+    assert(NumPreds < UINT_MAX && "NumPreds will overflow!");
+    assert(N->NumSuccs < UINT_MAX && "NumSuccs will overflow!");
     ++NumPreds;
     ++N->NumSuccs;
   }
-  if (!N->isScheduled)
+  if (!N->isScheduled) {
+    assert(NumPredsLeft < UINT_MAX && "NumPredsLeft will overflow!");
     ++NumPredsLeft;
-  if (!isScheduled)
+  }
+  if (!isScheduled) {
+    assert(N->NumSuccsLeft < UINT_MAX && "NumSuccsLeft will overflow!");
     ++N->NumSuccsLeft;
+  }
   Preds.push_back(D);
   N->Succs.push_back(P);
   if (P.getLatency() != 0) {
@@ -119,13 +125,19 @@ void SUnit::removePred(const SDep &D) {
       Preds.erase(I);
       // Update the bookkeeping.
       if (P.getKind() == SDep::Data) {
+        assert(NumPreds > 0 && "NumPreds will underflow!");
+        assert(N->NumSuccs > 0 && "NumSuccs will underflow!");
         --NumPreds;
         --N->NumSuccs;
       }
-      if (!N->isScheduled)
+      if (!N->isScheduled) {
+        assert(NumPredsLeft > 0 && "NumPredsLeft will underflow!");
         --NumPredsLeft;
-      if (!isScheduled)
+      }
+      if (!isScheduled) {
+        assert(N->NumSuccsLeft > 0 && "NumSuccsLeft will underflow!");
         --N->NumSuccsLeft;
+      }
       if (P.getLatency() != 0) {
         this->setDepthDirty();
         N->setHeightDirty();
@@ -257,58 +269,58 @@ void SUnit::ComputeHeight() {
 /// SUnit - Scheduling unit. It's an wrapper around either a single SDNode or
 /// a group of nodes flagged together.
 void SUnit::dump(const ScheduleDAG *G) const {
-  errs() << "SU(" << NodeNum << "): ";
+  dbgs() << "SU(" << NodeNum << "): ";
   G->dumpNode(this);
 }
 
 void SUnit::dumpAll(const ScheduleDAG *G) const {
   dump(G);
 
-  errs() << "  # preds left       : " << NumPredsLeft << "\n";
-  errs() << "  # succs left       : " << NumSuccsLeft << "\n";
-  errs() << "  Latency            : " << Latency << "\n";
-  errs() << "  Depth              : " << Depth << "\n";
-  errs() << "  Height             : " << Height << "\n";
+  dbgs() << "  # preds left       : " << NumPredsLeft << "\n";
+  dbgs() << "  # succs left       : " << NumSuccsLeft << "\n";
+  dbgs() << "  Latency            : " << Latency << "\n";
+  dbgs() << "  Depth              : " << Depth << "\n";
+  dbgs() << "  Height             : " << Height << "\n";
 
   if (Preds.size() != 0) {
-    errs() << "  Predecessors:\n";
+    dbgs() << "  Predecessors:\n";
     for (SUnit::const_succ_iterator I = Preds.begin(), E = Preds.end();
          I != E; ++I) {
-      errs() << "   ";
+      dbgs() << "   ";
       switch (I->getKind()) {
-      case SDep::Data:        errs() << "val "; break;
-      case SDep::Anti:        errs() << "anti"; break;
-      case SDep::Output:      errs() << "out "; break;
-      case SDep::Order:       errs() << "ch  "; break;
+      case SDep::Data:        dbgs() << "val "; break;
+      case SDep::Anti:        dbgs() << "anti"; break;
+      case SDep::Output:      dbgs() << "out "; break;
+      case SDep::Order:       dbgs() << "ch  "; break;
       }
-      errs() << "#";
-      errs() << I->getSUnit() << " - SU(" << I->getSUnit()->NodeNum << ")";
+      dbgs() << "#";
+      dbgs() << I->getSUnit() << " - SU(" << I->getSUnit()->NodeNum << ")";
       if (I->isArtificial())
-        errs() << " *";
-      errs() << ": Latency=" << I->getLatency();
-      errs() << "\n";
+        dbgs() << " *";
+      dbgs() << ": Latency=" << I->getLatency();
+      dbgs() << "\n";
     }
   }
   if (Succs.size() != 0) {
-    errs() << "  Successors:\n";
+    dbgs() << "  Successors:\n";
     for (SUnit::const_succ_iterator I = Succs.begin(), E = Succs.end();
          I != E; ++I) {
-      errs() << "   ";
+      dbgs() << "   ";
       switch (I->getKind()) {
-      case SDep::Data:        errs() << "val "; break;
-      case SDep::Anti:        errs() << "anti"; break;
-      case SDep::Output:      errs() << "out "; break;
-      case SDep::Order:       errs() << "ch  "; break;
+      case SDep::Data:        dbgs() << "val "; break;
+      case SDep::Anti:        dbgs() << "anti"; break;
+      case SDep::Output:      dbgs() << "out "; break;
+      case SDep::Order:       dbgs() << "ch  "; break;
       }
-      errs() << "#";
-      errs() << I->getSUnit() << " - SU(" << I->getSUnit()->NodeNum << ")";
+      dbgs() << "#";
+      dbgs() << I->getSUnit() << " - SU(" << I->getSUnit()->NodeNum << ")";
       if (I->isArtificial())
-        errs() << " *";
-      errs() << ": Latency=" << I->getLatency();
-      errs() << "\n";
+        dbgs() << " *";
+      dbgs() << ": Latency=" << I->getLatency();
+      dbgs() << "\n";
     }
   }
-  errs() << "\n";
+  dbgs() << "\n";
 }
 
 #ifndef NDEBUG
@@ -326,35 +338,35 @@ void ScheduleDAG::VerifySchedule(bool isBottomUp) {
         continue;
       }
       if (!AnyNotSched)
-        errs() << "*** Scheduling failed! ***\n";
+        dbgs() << "*** Scheduling failed! ***\n";
       SUnits[i].dump(this);
-      errs() << "has not been scheduled!\n";
+      dbgs() << "has not been scheduled!\n";
       AnyNotSched = true;
     }
     if (SUnits[i].isScheduled &&
-        (isBottomUp ? SUnits[i].getHeight() : SUnits[i].getHeight()) >
+        (isBottomUp ? SUnits[i].getHeight() : SUnits[i].getDepth()) >
           unsigned(INT_MAX)) {
       if (!AnyNotSched)
-        errs() << "*** Scheduling failed! ***\n";
+        dbgs() << "*** Scheduling failed! ***\n";
       SUnits[i].dump(this);
-      errs() << "has an unexpected "
+      dbgs() << "has an unexpected "
            << (isBottomUp ? "Height" : "Depth") << " value!\n";
       AnyNotSched = true;
     }
     if (isBottomUp) {
       if (SUnits[i].NumSuccsLeft != 0) {
         if (!AnyNotSched)
-          errs() << "*** Scheduling failed! ***\n";
+          dbgs() << "*** Scheduling failed! ***\n";
         SUnits[i].dump(this);
-        errs() << "has successors left!\n";
+        dbgs() << "has successors left!\n";
         AnyNotSched = true;
       }
     } else {
       if (SUnits[i].NumPredsLeft != 0) {
         if (!AnyNotSched)
-          errs() << "*** Scheduling failed! ***\n";
+          dbgs() << "*** Scheduling failed! ***\n";
         SUnits[i].dump(this);
-        errs() << "has predecessors left!\n";
+        dbgs() << "has predecessors left!\n";
         AnyNotSched = true;
       }
     }
@@ -368,26 +380,26 @@ void ScheduleDAG::VerifySchedule(bool isBottomUp) {
 }
 #endif
 
-/// InitDAGTopologicalSorting - create the initial topological 
+/// InitDAGTopologicalSorting - create the initial topological
 /// ordering from the DAG to be scheduled.
 ///
-/// The idea of the algorithm is taken from 
+/// The idea of the algorithm is taken from
 /// "Online algorithms for managing the topological order of
 /// a directed acyclic graph" by David J. Pearce and Paul H.J. Kelly
-/// This is the MNR algorithm, which was first introduced by 
-/// A. Marchetti-Spaccamela, U. Nanni and H. Rohnert in  
+/// This is the MNR algorithm, which was first introduced by
+/// A. Marchetti-Spaccamela, U. Nanni and H. Rohnert in
 /// "Maintaining a topological order under edge insertions".
 ///
-/// Short description of the algorithm: 
+/// Short description of the algorithm:
 ///
 /// Topological ordering, ord, of a DAG maps each node to a topological
 /// index so that for all edges X->Y it is the case that ord(X) < ord(Y).
 ///
-/// This means that if there is a path from the node X to the node Z, 
+/// This means that if there is a path from the node X to the node Z,
 /// then ord(X) < ord(Z).
 ///
 /// This property can be used to check for reachability of nodes:
-/// if Z is reachable from X, then an insertion of the edge Z->X would 
+/// if Z is reachable from X, then an insertion of the edge Z->X would
 /// create a cycle.
 ///
 /// The algorithm first computes a topological ordering for the DAG by
@@ -419,7 +431,7 @@ void ScheduleDAGTopologicalSort::InitDAGTopologicalSorting() {
       // Collect leaf nodes.
       WorkList.push_back(SU);
     }
-  }  
+  }
 
   int Id = DAGSize;
   while (!WorkList.empty()) {
@@ -444,7 +456,7 @@ void ScheduleDAGTopologicalSort::InitDAGTopologicalSorting() {
     SUnit *SU = &SUnits[i];
     for (SUnit::const_pred_iterator I = SU->Preds.begin(), E = SU->Preds.end();
          I != E; ++I) {
-      assert(Node2Index[SU->NodeNum] > Node2Index[I->getSUnit()->NodeNum] && 
+      assert(Node2Index[SU->NodeNum] > Node2Index[I->getSUnit()->NodeNum] &&
       "Wrong topological sorting");
     }
   }
@@ -482,7 +494,7 @@ void ScheduleDAGTopologicalSort::RemovePred(SUnit *M, SUnit *N) {
 void ScheduleDAGTopologicalSort::DFS(const SUnit *SU, int UpperBound,
                                      bool& HasLoop) {
   std::vector<const SUnit*> WorkList;
-  WorkList.reserve(SUnits.size()); 
+  WorkList.reserve(SUnits.size());
 
   WorkList.push_back(SU);
   do {
@@ -492,20 +504,20 @@ void ScheduleDAGTopologicalSort::DFS(const SUnit *SU, int UpperBound,
     for (int I = SU->Succs.size()-1; I >= 0; --I) {
       int s = SU->Succs[I].getSUnit()->NodeNum;
       if (Node2Index[s] == UpperBound) {
-        HasLoop = true; 
+        HasLoop = true;
         return;
       }
       // Visit successors if not already and in affected region.
       if (!Visited.test(s) && Node2Index[s] < UpperBound) {
         WorkList.push_back(SU->Succs[I].getSUnit());
-      } 
-    } 
+      }
+    }
   } while (!WorkList.empty());
 }
 
-/// Shift - Renumber the nodes so that the topological ordering is 
+/// Shift - Renumber the nodes so that the topological ordering is
 /// preserved.
-void ScheduleDAGTopologicalSort::Shift(BitVector& Visited, int LowerBound, 
+void ScheduleDAGTopologicalSort::Shift(BitVector& Visited, int LowerBound,
                                        int UpperBound) {
   std::vector<int> L;
   int shift = 0;
@@ -556,7 +568,7 @@ bool ScheduleDAGTopologicalSort::IsReachable(const SUnit *SU,
   // Is Ord(TargetSU) < Ord(SU) ?
   if (LowerBound < UpperBound) {
     Visited.reset();
-    // There may be a path from TargetSU to SU. Check for it. 
+    // There may be a path from TargetSU to SU. Check for it.
     DFS(TargetSU, UpperBound, HasLoop);
   }
   return HasLoop;
@@ -568,8 +580,7 @@ void ScheduleDAGTopologicalSort::Allocate(int n, int index) {
   Index2Node[index] = n;
 }
 
-ScheduleDAGTopologicalSort::ScheduleDAGTopologicalSort(
-                                                     std::vector<SUnit> &sunits)
- : SUnits(sunits) {}
+ScheduleDAGTopologicalSort::
+ScheduleDAGTopologicalSort(std::vector<SUnit> &sunits) : SUnits(sunits) {}
 
 ScheduleHazardRecognizer::~ScheduleHazardRecognizer() {}

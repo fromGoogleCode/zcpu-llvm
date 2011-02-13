@@ -11,42 +11,34 @@
 //===----------------------------------------------------------------------===//
 
 #include "ARMTargetMachine.h"
-#include "ARMTargetAsmInfo.h"
+#include "ARMMCAsmInfo.h"
 #include "ARMFrameInfo.h"
 #include "ARM.h"
 #include "llvm/PassManager.h"
 #include "llvm/CodeGen/Passes.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Target/TargetRegistry.h"
 using namespace llvm;
 
-static cl::opt<bool> DisableLdStOpti("disable-arm-loadstore-opti", cl::Hidden,
-                              cl::desc("Disable load store optimization pass"));
-static cl::opt<bool> DisableIfConversion("disable-arm-if-conversion",cl::Hidden,
-                              cl::desc("Disable if-conversion pass"));
-
-static const TargetAsmInfo *createTargetAsmInfo(const Target &T,
-                                                const StringRef &TT) {
+static MCAsmInfo *createMCAsmInfo(const Target &T, StringRef TT) {
   Triple TheTriple(TT);
   switch (TheTriple.getOS()) {
   case Triple::Darwin:
-    return new ARMDarwinTargetAsmInfo();
+    return new ARMMCAsmInfoDarwin();
   default:
-    return new ARMELFTargetAsmInfo();
+    return new ARMELFMCAsmInfo();
   }
 }
-
 
 extern "C" void LLVMInitializeARMTarget() {
   // Register the target.
   RegisterTargetMachine<ARMTargetMachine> X(TheARMTarget);
   RegisterTargetMachine<ThumbTargetMachine> Y(TheThumbTarget);
-  
+
   // Register the target asm info.
-  RegisterAsmInfoFn A(TheARMTarget, createTargetAsmInfo);
-  RegisterAsmInfoFn B(TheThumbTarget, createTargetAsmInfo);
+  RegisterAsmInfoFn A(TheARMTarget, createMCAsmInfo);
+  RegisterAsmInfoFn B(TheThumbTarget, createMCAsmInfo);
 }
 
 /// TargetMachine ctor - Create an ARM architecture model.
@@ -67,9 +59,15 @@ ARMTargetMachine::ARMTargetMachine(const Target &T, const std::string &TT,
                                    const std::string &FS)
   : ARMBaseTargetMachine(T, TT, FS, false), InstrInfo(Subtarget),
     DataLayout(Subtarget.isAPCS_ABI() ?
-               std::string("e-p:32:32-f64:32:32-i64:32:32") :
-               std::string("e-p:32:32-f64:64:64-i64:64:64")),
-    TLInfo(*this) {
+               std::string("e-p:32:32-f64:32:32-i64:32:32-"
+                           "v128:32:128-v64:32:64-n32") :
+               std::string("e-p:32:32-f64:64:64-i64:64:64-"
+                           "v128:64:128-v64:64:64-n32")),
+    TLInfo(*this),
+    TSInfo(*this) {
+  if (!Subtarget.hasARMOps())
+    report_fatal_error("CPU: '" + Subtarget.getCPUString() + "' does not "
+                       "support ARM mode execution!");
 }
 
 ThumbTargetMachine::ThumbTargetMachine(const Target &T, const std::string &TT,
@@ -80,18 +78,27 @@ ThumbTargetMachine::ThumbTargetMachine(const Target &T, const std::string &TT,
               : ((ARMBaseInstrInfo*)new Thumb1InstrInfo(Subtarget))),
     DataLayout(Subtarget.isAPCS_ABI() ?
                std::string("e-p:32:32-f64:32:32-i64:32:32-"
-                           "i16:16:32-i8:8:32-i1:8:32-a:0:32") :
+                           "i16:16:32-i8:8:32-i1:8:32-"
+                           "v128:32:128-v64:32:64-a:0:32-n32") :
                std::string("e-p:32:32-f64:64:64-i64:64:64-"
-                           "i16:16:32-i8:8:32-i1:8:32-a:0:32")),
-    TLInfo(*this) {
+                           "i16:16:32-i8:8:32-i1:8:32-"
+                           "v128:64:128-v64:64:64-a:0:32-n32")),
+    TLInfo(*this),
+    TSInfo(*this) {
 }
 
-
-
 // Pass Pipeline Configuration
+bool ARMBaseTargetMachine::addPreISel(PassManagerBase &PM,
+                                      CodeGenOpt::Level OptLevel) {
+  if (OptLevel != CodeGenOpt::None)
+    PM.add(createARMGlobalMergePass(getTargetLowering()));
+
+  return false;
+}
+
 bool ARMBaseTargetMachine::addInstSelector(PassManagerBase &PM,
                                            CodeGenOpt::Level OptLevel) {
-  PM.add(createARMISelDag(*this));
+  PM.add(createARMISelDag(*this, OptLevel));
   return false;
 }
 
@@ -100,42 +107,44 @@ bool ARMBaseTargetMachine::addPreRegAlloc(PassManagerBase &PM,
   if (Subtarget.hasNEON())
     PM.add(createNEONPreAllocPass());
 
-  // FIXME: temporarily disabling load / store optimization pass for Thumb mode.
-  if (OptLevel != CodeGenOpt::None && !DisableLdStOpti && !Subtarget.isThumb())
+  // FIXME: temporarily disabling load / store optimization pass for Thumb1.
+  if (OptLevel != CodeGenOpt::None && !Subtarget.isThumb1Only())
     PM.add(createARMLoadStoreOptimizationPass(true));
+
+  return true;
+}
+
+bool ARMBaseTargetMachine::addPreSched2(PassManagerBase &PM,
+                                        CodeGenOpt::Level OptLevel) {
+  // FIXME: temporarily disabling load / store optimization pass for Thumb1.
+  if (OptLevel != CodeGenOpt::None) {
+    if (!Subtarget.isThumb1Only())
+      PM.add(createARMLoadStoreOptimizationPass());
+    if (Subtarget.hasNEON())
+      PM.add(createNEONMoveFixPass());
+  }
+
+  // Expand some pseudo instructions into multiple instructions to allow
+  // proper scheduling.
+  PM.add(createARMExpandPseudoPass());
+
+  if (OptLevel != CodeGenOpt::None) {
+    if (!Subtarget.isThumb1Only())
+      PM.add(createIfConverterPass());
+  }
+  if (Subtarget.isThumb2())
+    PM.add(createThumb2ITBlockPass());
+
   return true;
 }
 
 bool ARMBaseTargetMachine::addPreEmitPass(PassManagerBase &PM,
                                           CodeGenOpt::Level OptLevel) {
-  // FIXME: temporarily disabling load / store optimization pass for Thumb1 mode.
-  if (OptLevel != CodeGenOpt::None && !DisableLdStOpti &&
-      !Subtarget.isThumb1Only())
-    PM.add(createARMLoadStoreOptimizationPass());
-
-  if (OptLevel != CodeGenOpt::None &&
-      !DisableIfConversion && !Subtarget.isThumb1Only())
-    PM.add(createIfConverterPass());
-
-  if (Subtarget.isThumb2()) {
-    PM.add(createThumb2ITBlockPass());
+  if (Subtarget.isThumb2() && !Subtarget.prefers32BitThumb())
     PM.add(createThumb2SizeReductionPass());
-  }
 
   PM.add(createARMConstantIslandPass());
   return true;
-}
-
-bool ARMBaseTargetMachine::addCodeEmitter(PassManagerBase &PM,
-                                          CodeGenOpt::Level OptLevel,
-                                          MachineCodeEmitter &MCE) {
-  // FIXME: Move this to TargetJITInfo!
-  if (DefRelocModel == Reloc::Default)
-    setRelocationModel(Reloc::Static);
-
-  // Machine code emitter pass for ARM.
-  PM.add(createARMCodeEmitterPass(*this, MCE));
-  return false;
 }
 
 bool ARMBaseTargetMachine::addCodeEmitter(PassManagerBase &PM,
@@ -149,40 +158,3 @@ bool ARMBaseTargetMachine::addCodeEmitter(PassManagerBase &PM,
   PM.add(createARMJITCodeEmitterPass(*this, JCE));
   return false;
 }
-
-bool ARMBaseTargetMachine::addCodeEmitter(PassManagerBase &PM,
-                                          CodeGenOpt::Level OptLevel,
-                                          ObjectCodeEmitter &OCE) {
-  // FIXME: Move this to TargetJITInfo!
-  if (DefRelocModel == Reloc::Default)
-    setRelocationModel(Reloc::Static);
-
-  // Machine code emitter pass for ARM.
-  PM.add(createARMObjectCodeEmitterPass(*this, OCE));
-  return false;
-}
-
-bool ARMBaseTargetMachine::addSimpleCodeEmitter(PassManagerBase &PM,
-                                                CodeGenOpt::Level OptLevel,
-                                                MachineCodeEmitter &MCE) {
-  // Machine code emitter pass for ARM.
-  PM.add(createARMCodeEmitterPass(*this, MCE));
-  return false;
-}
-
-bool ARMBaseTargetMachine::addSimpleCodeEmitter(PassManagerBase &PM,
-                                                CodeGenOpt::Level OptLevel,
-                                                JITCodeEmitter &JCE) {
-  // Machine code emitter pass for ARM.
-  PM.add(createARMJITCodeEmitterPass(*this, JCE));
-  return false;
-}
-
-bool ARMBaseTargetMachine::addSimpleCodeEmitter(PassManagerBase &PM,
-                                            CodeGenOpt::Level OptLevel,
-                                            ObjectCodeEmitter &OCE) {
-  // Machine code emitter pass for ARM.
-  PM.add(createARMObjectCodeEmitterPass(*this, OCE));
-  return false;
-}
-

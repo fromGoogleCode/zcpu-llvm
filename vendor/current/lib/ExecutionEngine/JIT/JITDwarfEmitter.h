@@ -32,7 +32,6 @@ class JITDwarfEmitter {
   const TargetRegisterInfo* RI;
   MachineModuleInfo* MMI;
   JIT& Jit;
-  bool needsIndirectEncoding;
   bool stackGrowthDirection;
   
   unsigned char* EmitExceptionTable(MachineFunction* MF,
@@ -50,17 +49,6 @@ class JITDwarfEmitter {
                              unsigned char* EndFunction,
                              unsigned char* ExceptionTable) const;
     
-  unsigned GetExceptionTableSizeInBytes(MachineFunction* MF) const;
-  
-  unsigned
-    GetFrameMovesSizeInBytes(intptr_t BaseLabelPtr, 
-                             const std::vector<MachineMove> &Moves) const;
-    
-  unsigned GetCommonEHFrameSizeInBytes(const Function* Personality) const;
-
-  unsigned GetEHFrameSizeInBytes(const Function* Personality, 
-                                 unsigned char* StartFunction) const; 
-    
 public:
   
   JITDwarfEmitter(JIT& jit);
@@ -68,14 +56,10 @@ public:
   unsigned char* EmitDwarfTable(MachineFunction& F, 
                                 JITCodeEmitter& JCE,
                                 unsigned char* StartFunction,
-                                unsigned char* EndFunction);
+                                unsigned char* EndFunction,
+                                unsigned char* &EHFramePtr);
   
   
-  unsigned GetDwarfTableSizeInBytes(MachineFunction& F, 
-                                    JITCodeEmitter& JCE,
-                                    unsigned char* StartFunction,
-                                    unsigned char* EndFunction);
-
   void setModuleInfo(MachineModuleInfo* Info) {
     MMI = Info;
   }

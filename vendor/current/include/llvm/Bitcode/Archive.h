@@ -22,13 +22,11 @@
 #include "llvm/System/Path.h"
 #include <map>
 #include <set>
-#include <fstream>
 
 namespace llvm {
   class MemoryBuffer;
 
 // Forward declare classes
-class ModuleProvider;      // From VMCore
 class Module;              // From VMCore
 class Archive;             // Declared below
 class ArchiveMemberHeader; // Internal implementation class
@@ -109,7 +107,7 @@ class ArchiveMember : public ilist_node<ArchiveMember> {
     /// into memory, the return value will be null.
     /// @returns a pointer to the member's data.
     /// @brief Get the data content of the archive member
-    const void* getData() const { return data; }
+    const char* getData() const { return data; }
 
     /// This method determines if the member is a regular compressed file.
     /// @returns true iff the archive member is a compressed regular file.
@@ -174,7 +172,7 @@ class ArchiveMember : public ilist_node<ArchiveMember> {
     sys::PathWithStatus path;     ///< Path of file containing the member
     sys::FileStatus     info;     ///< Status info (size,mode,date)
     unsigned            flags;    ///< Flags about the archive member
-    const void*         data;     ///< Data for the member
+    const char*         data;     ///< Data for the member
 
   /// @}
   /// @name Constructors
@@ -299,7 +297,7 @@ class Archive {
     /// its symbol table without reading in any of the archive's members. This
     /// reduces both I/O and cpu time in opening the archive if it is to be used
     /// solely for symbol lookup (e.g. during linking).  The \p Filename must
-    /// exist and be an archive file or an exception will be thrown. This form
+    /// exist and be an archive file or an error will be returned. This form
     /// of opening the archive is intended for read-only operations that need to
     /// locate members via the symbol table for link editing.  Since the archve
     /// members are not read by this method, the archive will appear empty upon
@@ -308,8 +306,7 @@ class Archive {
     /// if this form of opening the archive is used that only the symbol table
     /// lookup methods (getSymbolTable, findModuleDefiningSymbol, and
     /// findModulesDefiningSymbols) be used.
-    /// @throws std::string if an error occurs opening the file
-    /// @returns an Archive* that represents the archive file.
+    /// @returns an Archive* that represents the archive file, or null on error.
     /// @brief Open an existing archive and load its symbols.
     static Archive* OpenAndLoadSymbols(
       const sys::Path& Filename,   ///< Name of the archive file to open
@@ -321,7 +318,6 @@ class Archive {
     /// closes files. It does nothing with the archive file on disk. If you
     /// haven't used the writeToDisk method by the time the destructor is
     /// called, all changes to the archive will be lost.
-    /// @throws std::string if an error occurs
     /// @brief Destruct in-memory archive
     ~Archive();
 
@@ -375,14 +371,14 @@ class Archive {
     /// returns the associated module that defines that symbol. This method can
     /// be called as many times as necessary. This is handy for linking the
     /// archive into another module based on unresolved symbols. Note that the
-    /// ModuleProvider returned by this accessor should not be deleted by the
-    /// caller. It is managed internally by the Archive class. It is possible
-    /// that multiple calls to this accessor will return the same ModuleProvider
-    /// instance because the associated module defines multiple symbols.
-    /// @returns The ModuleProvider* found or null if the archive does not
-    /// contain a module that defines the \p symbol.
+    /// Module returned by this accessor should not be deleted by the caller. It
+    /// is managed internally by the Archive class. It is possible that multiple
+    /// calls to this accessor will return the same Module instance because the
+    /// associated module defines multiple symbols.
+    /// @returns The Module* found or null if the archive does not contain a
+    /// module that defines the \p symbol.
     /// @brief Look up a module by symbol name.
-    ModuleProvider* findModuleDefiningSymbol(
+    Module* findModuleDefiningSymbol(
       const std::string& symbol,  ///< Symbol to be sought
       std::string* ErrMessage     ///< Error message storage, if non-zero
     );
@@ -398,7 +394,7 @@ class Archive {
     /// @brief Look up multiple symbols in the archive.
     bool findModulesDefiningSymbols(
       std::set<std::string>& symbols,     ///< Symbols to be sought
-      std::set<ModuleProvider*>& modules, ///< The modules matching \p symbols
+      std::set<Module*>& modules,         ///< The modules matching \p symbols
       std::string* ErrMessage             ///< Error msg storage, if non-zero
     );
 
@@ -514,9 +510,9 @@ class Archive {
 
     /// This type is used to keep track of bitcode modules loaded from the
     /// symbol table. It maps the file offset to a pair that consists of the
-    /// associated ArchiveMember and the ModuleProvider.
+    /// associated ArchiveMember and the Module.
     /// @brief Module mapping type
-    typedef std::map<unsigned,std::pair<ModuleProvider*,ArchiveMember*> >
+    typedef std::map<unsigned,std::pair<Module*,ArchiveMember*> >
       ModuleMap;
 
 

@@ -19,7 +19,6 @@
 #include "llvm/Pass.h"
 #include "llvm/Module.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/Statistic.h"
@@ -44,7 +43,7 @@ APIList("internalize-public-api-list", cl::value_desc("list"),
         cl::CommaSeparated);
 
 namespace {
-  class VISIBILITY_HIDDEN InternalizePass : public ModulePass {
+  class InternalizePass : public ModulePass {
     std::set<std::string> ExternalNames;
     /// If no api symbols were specified and a main function is defined,
     /// assume the main function is the only API
@@ -64,11 +63,11 @@ namespace {
 } // end anonymous namespace
 
 char InternalizePass::ID = 0;
-static RegisterPass<InternalizePass>
-X("internalize", "Internalize Global Symbols");
+INITIALIZE_PASS(InternalizePass, "internalize",
+                "Internalize Global Symbols", false, false);
 
 InternalizePass::InternalizePass(bool AllButMain)
-  : ModulePass(&ID), AllButMain(AllButMain){
+  : ModulePass(ID), AllButMain(AllButMain){
   if (!APIFile.empty())           // If a filename is specified, use it.
     LoadFile(APIFile.c_str());
   if (!APIList.empty())           // If a list is specified, use it as well.
@@ -76,7 +75,7 @@ InternalizePass::InternalizePass(bool AllButMain)
 }
 
 InternalizePass::InternalizePass(const std::vector<const char *>&exportList)
-  : ModulePass(&ID), AllButMain(false){
+  : ModulePass(ID), AllButMain(false){
   for(std::vector<const char *>::const_iterator itr = exportList.begin();
         itr != exportList.end(); itr++) {
     ExternalNames.insert(*itr);
@@ -87,7 +86,7 @@ void InternalizePass::LoadFile(const char *Filename) {
   // Load the APIFile...
   std::ifstream In(Filename);
   if (!In.good()) {
-    cerr << "WARNING: Internalize couldn't load file '" << Filename
+    errs() << "WARNING: Internalize couldn't load file '" << Filename
          << "'! Continuing as if it's empty.\n";
     return; // Just continue as if the file were empty
   }
@@ -132,7 +131,7 @@ bool InternalizePass::runOnModule(Module &M) {
       if (ExternalNode) ExternalNode->removeOneAbstractEdgeTo((*CG)[I]);
       Changed = true;
       ++NumFunctions;
-      DEBUG(errs() << "Internalizing func " << I->getName() << "\n");
+      DEBUG(dbgs() << "Internalizing func " << I->getName() << "\n");
     }
 
   // Never internalize the llvm.used symbol.  It is used to implement
@@ -157,22 +156,26 @@ bool InternalizePass::runOnModule(Module &M) {
   for (Module::global_iterator I = M.global_begin(), E = M.global_end();
        I != E; ++I)
     if (!I->isDeclaration() && !I->hasLocalLinkage() &&
+        // Available externally is really just a "declaration with a body".
+        !I->hasAvailableExternallyLinkage() &&
         !ExternalNames.count(I->getName())) {
       I->setLinkage(GlobalValue::InternalLinkage);
       Changed = true;
       ++NumGlobals;
-      DEBUG(errs() << "Internalized gvar " << I->getName() << "\n");
+      DEBUG(dbgs() << "Internalized gvar " << I->getName() << "\n");
     }
 
   // Mark all aliases that are not in the api as internal as well.
   for (Module::alias_iterator I = M.alias_begin(), E = M.alias_end();
        I != E; ++I)
     if (!I->isDeclaration() && !I->hasInternalLinkage() &&
+        // Available externally is really just a "declaration with a body".
+        !I->hasAvailableExternallyLinkage() &&
         !ExternalNames.count(I->getName())) {
       I->setLinkage(GlobalValue::InternalLinkage);
       Changed = true;
       ++NumAliases;
-      DEBUG(errs() << "Internalized alias " << I->getName() << "\n");
+      DEBUG(dbgs() << "Internalized alias " << I->getName() << "\n");
     }
 
   return Changed;

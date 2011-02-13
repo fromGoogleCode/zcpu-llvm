@@ -23,6 +23,7 @@
 #include "X86JITInfo.h"
 #include "X86Subtarget.h"
 #include "X86ISelLowering.h"
+#include "X86SelectionDAGInfo.h"
 
 namespace llvm {
   
@@ -35,9 +36,15 @@ class X86TargetMachine : public LLVMTargetMachine {
   X86InstrInfo      InstrInfo;
   X86JITInfo        JITInfo;
   X86TargetLowering TLInfo;
+  X86SelectionDAGInfo TSInfo;
   X86ELFWriterInfo  ELFWriterInfo;
   Reloc::Model      DefRelocModel; // Reloc model before it's overridden.
 
+private:
+  // We have specific defaults for X86.
+  virtual void setCodeModelForJIT();
+  virtual void setCodeModelForStatic();
+  
 public:
   X86TargetMachine(const Target &T, const std::string &TT, 
                    const std::string &FS, bool is64Bit);
@@ -46,8 +53,11 @@ public:
   virtual const TargetFrameInfo  *getFrameInfo() const { return &FrameInfo; }
   virtual       X86JITInfo       *getJITInfo()         { return &JITInfo; }
   virtual const X86Subtarget     *getSubtargetImpl() const{ return &Subtarget; }
-  virtual       X86TargetLowering *getTargetLowering() const { 
-    return const_cast<X86TargetLowering*>(&TLInfo); 
+  virtual const X86TargetLowering *getTargetLowering() const { 
+    return &TLInfo;
+  }
+  virtual const X86SelectionDAGInfo *getSelectionDAGInfo() const { 
+    return &TSInfo;
   }
   virtual const X86RegisterInfo  *getRegisterInfo() const {
     return &InstrInfo.getRegisterInfo();
@@ -61,21 +71,9 @@ public:
   virtual bool addInstSelector(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addPreRegAlloc(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addPostRegAlloc(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
-  virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
-                              MachineCodeEmitter &MCE);
+  virtual bool addPreEmitPass(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
                               JITCodeEmitter &JCE);
-  virtual bool addCodeEmitter(PassManagerBase &PM, CodeGenOpt::Level OptLevel,
-                              ObjectCodeEmitter &OCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    MachineCodeEmitter &MCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    JITCodeEmitter &JCE);
-  virtual bool addSimpleCodeEmitter(PassManagerBase &PM,
-                                    CodeGenOpt::Level OptLevel,
-                                    ObjectCodeEmitter &OCE);
 };
 
 /// X86_32TargetMachine - X86 32-bit target machine.

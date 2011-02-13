@@ -17,13 +17,15 @@
 #include "llvm/Analysis/LoopInfo.h"
 using namespace llvm;
 
-FunctionPass *llvm::createLiveValuesPass() { return new LiveValues(); }
+namespace llvm {
+  FunctionPass *createLiveValuesPass() { return new LiveValues(); }
+}
 
 char LiveValues::ID = 0;
-static RegisterPass<LiveValues>
-X("live-values", "Value Liveness Analysis", false, true);
+INITIALIZE_PASS(LiveValues, "live-values",
+                "Value Liveness Analysis", false, true);
 
-LiveValues::LiveValues() : FunctionPass(&ID) {}
+LiveValues::LiveValues() : FunctionPass(ID) {}
 
 void LiveValues::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<DominatorTree>();
@@ -123,7 +125,7 @@ LiveValues::Memo &LiveValues::compute(const Value *V) {
   bool LiveOutOfDefBB = false;
 
   // Examine each use of the value.
-  for (Value::use_const_iterator I = V->use_begin(), E = V->use_end();
+  for (Value::const_use_iterator I = V->use_begin(), E = V->use_end();
        I != E; ++I) {
     const User *U = *I;
     const BasicBlock *UseBB = cast<Instruction>(U)->getParent();
@@ -182,7 +184,7 @@ LiveValues::Memo &LiveValues::compute(const Value *V) {
     }
   }
 
-  // If the value was never used outside the the block in which it was
+  // If the value was never used outside the block in which it was
   // defined, it's killed in that block.
   if (!LiveOutOfDefBB)
     M.Killed.insert(DefBB);

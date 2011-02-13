@@ -1,17 +1,20 @@
 // Check that (one_or_more) and (zero_or_one) properties work.
 // The dummy tool and graph are required to silence warnings.
-// RUN: tblgen -I $srcroot/include --gen-llvmc %s -o %t
-// RUN: grep cl::ZeroOrOne %t | count 1
-// RUN: grep cl::OneOrMore %t | count 1
+// RUN: tblgen -I %p/../../include --gen-llvmc %s -o %t
+// RUN: FileCheck -input-file %t %s
+// RUN: %compile_cxx %t
+// XFAIL: vg_leak
 
 include "llvm/CompilerDriver/Common.td"
 
 def OptList : OptionList<[
+    // CHECK: cl::OneOrMore
     (prefix_list_option "foo", (one_or_more)),
-    (parameter_list_option "baz", (zero_or_one))]>;
+    // CHECK: cl::Optional
+    (parameter_list_option "baz", (optional))]>;
 
 def dummy_tool : Tool<[
-(cmd_line "dummy_cmd"),
+(command "dummy_cmd"),
 (in_language "dummy"),
 (out_language "dummy"),
 (actions (case
@@ -19,4 +22,4 @@ def dummy_tool : Tool<[
          (not_empty "baz"), (forward "baz")))
 ]>;
 
-def DummyGraph : CompilationGraph<[SimpleEdge<"root", "dummy_tool">]>;
+def DummyGraph : CompilationGraph<[(edge "root", "dummy_tool")]>;

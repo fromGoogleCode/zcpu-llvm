@@ -15,8 +15,7 @@
 #define DEBUG_TYPE "hello"
 #include "llvm/Pass.h"
 #include "llvm/Function.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/Streams.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/Statistic.h"
 using namespace llvm;
 
@@ -26,42 +25,41 @@ namespace {
   // Hello - The first implementation, without getAnalysisUsage.
   struct Hello : public FunctionPass {
     static char ID; // Pass identification, replacement for typeid
-    Hello() : FunctionPass(&ID) {}
+    Hello() : FunctionPass(ID) {}
 
     virtual bool runOnFunction(Function &F) {
-      HelloCounter++;
-      std::string fname = F.getName();
-      EscapeString(fname);
-      cerr << "Hello: " << fname << "\n";
+      ++HelloCounter;
+      errs() << "Hello: ";
+      errs().write_escaped(F.getName()) << '\n';
       return false;
     }
   };
 }
 
 char Hello::ID = 0;
-static RegisterPass<Hello> X("hello", "Hello World Pass");
+INITIALIZE_PASS(Hello, "hello", "Hello World Pass", false, false);
 
 namespace {
   // Hello2 - The second implementation with getAnalysisUsage implemented.
   struct Hello2 : public FunctionPass {
     static char ID; // Pass identification, replacement for typeid
-    Hello2() : FunctionPass(&ID) {}
+    Hello2() : FunctionPass(ID) {}
 
     virtual bool runOnFunction(Function &F) {
-      HelloCounter++;
-      std::string fname = F.getName();
-      EscapeString(fname);
-      cerr << "Hello: " << fname << "\n";
+      ++HelloCounter;
+      errs() << "Hello: ";
+      errs().write_escaped(F.getName()) << '\n';
       return false;
     }
 
     // We don't modify the program, so we preserve all analyses
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesAll();
-    };
+    }
   };
 }
 
 char Hello2::ID = 0;
-static RegisterPass<Hello2>
-Y("hello2", "Hello World Pass (with getAnalysisUsage implemented)");
+INITIALIZE_PASS(Hello2, "hello2",
+                "Hello World Pass (with getAnalysisUsage implemented)",
+                false, false);

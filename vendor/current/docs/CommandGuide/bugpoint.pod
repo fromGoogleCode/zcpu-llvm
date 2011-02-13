@@ -67,6 +67,10 @@ tool.
 Pass all arguments specified after B<--gcc-tool-args> to the invocation of
 B<gcc>.
 
+=item B<--opt-args> I<opt args>
+
+Pass all arguments specified after B<--opt-args> to the invocation of B<opt>.
+
 =item B<--disable-{dce,simplifycfg}>
 
 Do not run the specified passes to clean up and reduce the size of the test
@@ -85,7 +89,7 @@ mis-management.
 Continually randomize the specified passes and run them on the test program
 until a bug is found or the user kills B<bugpoint>. 
 
-=item B<--help>
+=item B<-help>
 
 Print a summary of command line options.
 
@@ -99,9 +103,9 @@ it runs, to come from that file.
 Load the dynamic object F<plugin> into B<bugpoint> itself.  This object should
 register new optimization passes.  Once loaded, the object will add new command
 line options to enable various optimizations.  To see the new complete list of
-optimizations, use the B<--help> and B<--load> options together; for example:
+optimizations, use the B<-help> and B<--load> options together; for example:
 
-    bugpoint --load myNewPass.so --help
+    bugpoint --load myNewPass.so -help
 
 =item B<--mlimit> F<megabytes>
 

@@ -15,15 +15,14 @@
 #include "Alpha.h"
 #include "AlphaInstrInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetAsmInfo.h"
+#include "llvm/MC/MCAsmInfo.h"
 using namespace llvm;
 
 namespace {
-  struct VISIBILITY_HIDDEN AlphaBSel : public MachineFunctionPass {
+  struct AlphaBSel : public MachineFunctionPass {
     static char ID;
-    AlphaBSel() : MachineFunctionPass(&ID) {}
+    AlphaBSel() : MachineFunctionPass(ID) {}
 
     virtual bool runOnMachineFunction(MachineFunction &Fn);
 

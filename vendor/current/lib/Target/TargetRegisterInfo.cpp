@@ -22,14 +22,14 @@ using namespace llvm;
 
 TargetRegisterInfo::TargetRegisterInfo(const TargetRegisterDesc *D, unsigned NR,
                              regclass_iterator RCB, regclass_iterator RCE,
+                             const char *const *subregindexnames,
                              int CFSO, int CFDO,
                              const unsigned* subregs, const unsigned subregsize,
-                         const unsigned* superregs, const unsigned superregsize,
                          const unsigned* aliases, const unsigned aliasessize)
   : SubregHash(subregs), SubregHashSize(subregsize),
-    SuperregHash(superregs), SuperregHashSize(superregsize),
     AliasesHash(aliases), AliasesHashSize(aliasessize),
-    Desc(D), NumRegs(NR), RegClassBegin(RCB), RegClassEnd(RCE) {
+    Desc(D), SubRegIndexNames(subregindexnames), NumRegs(NR),
+    RegClassBegin(RCB), RegClassEnd(RCE) {
   assert(NumRegs < FirstVirtualRegister &&
          "Target has too many physical registers!");
 
@@ -39,20 +39,20 @@ TargetRegisterInfo::TargetRegisterInfo(const TargetRegisterDesc *D, unsigned NR,
 
 TargetRegisterInfo::~TargetRegisterInfo() {}
 
-/// getPhysicalRegisterRegClass - Returns the Register Class of a physical
-/// register of the given type. If type is EVT::Other, then just return any
-/// register class the register belongs to.
+/// getMinimalPhysRegClass - Returns the Register Class of a physical
+/// register of the given type, picking the most sub register class of
+/// the right type that contains this physreg.
 const TargetRegisterClass *
-TargetRegisterInfo::getPhysicalRegisterRegClass(unsigned reg, EVT VT) const {
+TargetRegisterInfo::getMinimalPhysRegClass(unsigned reg, EVT VT) const {
   assert(isPhysicalRegister(reg) && "reg must be a physical register");
 
-  // Pick the most super register class of the right type that contains
+  // Pick the most sub register class of the right type that contains
   // this physreg.
   const TargetRegisterClass* BestRC = 0;
   for (regclass_iterator I = regclass_begin(), E = regclass_end(); I != E; ++I){
     const TargetRegisterClass* RC = *I;
     if ((VT == MVT::Other || RC->hasType(VT)) && RC->contains(reg) &&
-        (!BestRC || BestRC->hasSuperClass(RC)))
+        (!BestRC || BestRC->hasSubClass(RC)))
       BestRC = RC;
   }
 
@@ -62,33 +62,38 @@ TargetRegisterInfo::getPhysicalRegisterRegClass(unsigned reg, EVT VT) const {
 
 /// getAllocatableSetForRC - Toggle the bits that represent allocatable
 /// registers for the specific register class.
-static void getAllocatableSetForRC(MachineFunction &MF,
-                                   const TargetRegisterClass *RC, BitVector &R){  
+static void getAllocatableSetForRC(const MachineFunction &MF,
+                                   const TargetRegisterClass *RC, BitVector &R){
   for (TargetRegisterClass::iterator I = RC->allocation_order_begin(MF),
          E = RC->allocation_order_end(MF); I != E; ++I)
     R.set(*I);
 }
 
-BitVector TargetRegisterInfo::getAllocatableSet(MachineFunction &MF,
+BitVector TargetRegisterInfo::getAllocatableSet(const MachineFunction &MF,
                                           const TargetRegisterClass *RC) const {
   BitVector Allocatable(NumRegs);
   if (RC) {
     getAllocatableSetForRC(MF, RC, Allocatable);
-    return Allocatable;
+  } else {
+    for (TargetRegisterInfo::regclass_iterator I = regclass_begin(),
+         E = regclass_end(); I != E; ++I)
+      getAllocatableSetForRC(MF, *I, Allocatable);
   }
 
-  for (TargetRegisterInfo::regclass_iterator I = regclass_begin(),
-         E = regclass_end(); I != E; ++I)
-    getAllocatableSetForRC(MF, *I, Allocatable);
+  // Mask out the reserved registers
+  BitVector Reserved = getReservedRegs(MF);
+  Allocatable ^= Reserved & Allocatable;
+
   return Allocatable;
 }
 
 /// getFrameIndexOffset - Returns the displacement from the frame register to
 /// the stack frame of the specified index. This is the default implementation
-/// which is likely incorrect for the target.
-int TargetRegisterInfo::getFrameIndexOffset(MachineFunction &MF, int FI) const {
+/// which is overridden for some targets.
+int TargetRegisterInfo::getFrameIndexOffset(const MachineFunction &MF,
+                                            int FI) const {
   const TargetFrameInfo &TFI = *MF.getTarget().getFrameInfo();
-  MachineFrameInfo *MFI = MF.getFrameInfo();
+  const MachineFrameInfo *MFI = MF.getFrameInfo();
   return MFI->getObjectOffset(FI) + MFI->getStackSize() -
     TFI.getOffsetOfLocalArea() + MFI->getOffsetAdjustment();
 }
@@ -96,7 +101,7 @@ int TargetRegisterInfo::getFrameIndexOffset(MachineFunction &MF, int FI) const {
 /// getInitialFrameState - Returns a list of machine moves that are assumed
 /// on entry to a function.
 void
-TargetRegisterInfo::getInitialFrameState(std::vector<MachineMove> &Moves) const {
+TargetRegisterInfo::getInitialFrameState(std::vector<MachineMove> &Moves) const{
   // Default is to do nothing.
 }
 

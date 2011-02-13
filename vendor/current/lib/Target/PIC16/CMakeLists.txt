@@ -10,15 +10,17 @@ tablegen(PIC16GenDAGISel.inc -gen-dag-isel)
 tablegen(PIC16GenCallingConv.inc -gen-callingconv)
 tablegen(PIC16GenSubtarget.inc -gen-subtarget)
 
-add_llvm_target(PIC16
+add_llvm_target(PIC16CodeGen
   PIC16DebugInfo.cpp
   PIC16InstrInfo.cpp
   PIC16ISelDAGToDAG.cpp
   PIC16ISelLowering.cpp
   PIC16MemSelOpt.cpp
+  PIC16MCAsmInfo.cpp
   PIC16RegisterInfo.cpp
+  PIC16Section.cpp
   PIC16Subtarget.cpp
-  PIC16TargetAsmInfo.cpp
   PIC16TargetMachine.cpp
   PIC16TargetObjectFile.cpp
+  PIC16SelectionDAGInfo.cpp
   )

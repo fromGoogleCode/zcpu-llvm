@@ -23,8 +23,8 @@
 using namespace llvm;
 
 char FindUsedTypes::ID = 0;
-static RegisterPass<FindUsedTypes>
-X("print-used-types", "Find Used Types", false, true);
+INITIALIZE_PASS(FindUsedTypes, "print-used-types",
+                "Find Used Types", false, true);
 
 // IncorporateType - Incorporate one type and all of its subtypes into the
 // collection of used types.
@@ -92,13 +92,12 @@ bool FindUsedTypes::runOnModule(Module &m) {
 // passed in, then the types are printed symbolically if possible, using the
 // symbol table from the module.
 //
-void FindUsedTypes::print(std::ostream &OS, const Module *M) const {
-  raw_os_ostream RO(OS);
-  RO << "Types in use by this module:\n";
+void FindUsedTypes::print(raw_ostream &OS, const Module *M) const {
+  OS << "Types in use by this module:\n";
   for (std::set<const Type *>::const_iterator I = UsedTypes.begin(),
        E = UsedTypes.end(); I != E; ++I) {
-    RO << "   ";
-    WriteTypeSymbolic(RO, *I, M);
-    RO << '\n';
+    OS << "   ";
+    WriteTypeSymbolic(OS, *I, M);
+    OS << '\n';
   }
 }

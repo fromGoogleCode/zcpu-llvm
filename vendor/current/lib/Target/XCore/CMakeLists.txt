@@ -10,15 +10,15 @@ tablegen(XCoreGenDAGISel.inc -gen-dag-isel)
 tablegen(XCoreGenCallingConv.inc -gen-callingconv)
 tablegen(XCoreGenSubtarget.inc -gen-subtarget)
 
-add_llvm_target(XCore
-  MCSectionXCore.cpp
+add_llvm_target(XCoreCodeGen
   XCoreFrameInfo.cpp
   XCoreInstrInfo.cpp
   XCoreISelDAGToDAG.cpp
   XCoreISelLowering.cpp
+  XCoreMCAsmInfo.cpp
   XCoreRegisterInfo.cpp
   XCoreSubtarget.cpp
-  XCoreTargetAsmInfo.cpp
   XCoreTargetMachine.cpp
   XCoreTargetObjectFile.cpp
+  XCoreSelectionDAGInfo.cpp
   )

@@ -1,4 +1,4 @@
-//===- Thumb1RegisterInfo.h - Thumb-1 Register Information Impl ----*- C++ -*-===//
+//===- Thumb1RegisterInfo.h - Thumb-1 Register Information Impl -*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,7 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file contains the Thumb-1 implementation of the TargetRegisterInfo class.
+// This file contains the Thumb-1 implementation of the TargetRegisterInfo
+// class.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,23 +38,25 @@ public:
                         unsigned PredReg = 0) const;
 
   /// Code Generation virtual methods...
-  const TargetRegisterClass *
-    getPhysicalRegisterRegClass(unsigned Reg, EVT VT = MVT::Other) const;
-
-  bool requiresRegisterScavenging(const MachineFunction &MF) const;
-
-  bool hasReservedCallFrame(MachineFunction &MF) const;
+  bool hasReservedCallFrame(const MachineFunction &MF) const;
 
   void eliminateCallFramePseudoInstr(MachineFunction &MF,
                                      MachineBasicBlock &MBB,
                                      MachineBasicBlock::iterator I) const;
 
-  // rewrite MI to access 'Offset' bytes from the FP. Return the offset that
-  // could not be handled directly in MI.
-  int rewriteFrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
-                        unsigned FrameReg, int Offset,
-                        unsigned MOVOpc, unsigned ADDriOpc, unsigned SUBriOpc) const;
-
+  // rewrite MI to access 'Offset' bytes from the FP. Update Offset to be
+  // however much remains to be handled. Return 'true' if no further
+  // work is required.
+  bool rewriteFrameIndex(MachineBasicBlock::iterator II, unsigned FrameRegIdx,
+                         unsigned FrameReg, int &Offset,
+                         const ARMBaseInstrInfo &TII) const;
+  void resolveFrameIndex(MachineBasicBlock::iterator I,
+                         unsigned BaseReg, int64_t Offset) const;
+  bool saveScavengerRegister(MachineBasicBlock &MBB,
+                             MachineBasicBlock::iterator I,
+                             MachineBasicBlock::iterator &UseMI,
+                             const TargetRegisterClass *RC,
+                             unsigned Reg) const;
   void eliminateFrameIndex(MachineBasicBlock::iterator II,
                            int SPAdj, RegScavenger *RS = NULL) const;
 

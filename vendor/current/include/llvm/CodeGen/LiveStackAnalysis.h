@@ -27,7 +27,7 @@ namespace llvm {
   class LiveStacks : public MachineFunctionPass {
     /// Special pool allocator for VNInfo's (LiveInterval val#).
     ///
-    BumpPtrAllocator VNInfoAllocator;
+    VNInfo::Allocator VNInfoAllocator;
 
     /// S2IMap - Stack slot indices to live interval mapping.
     ///
@@ -39,7 +39,7 @@ namespace llvm {
     
   public:
     static char ID; // Pass identification, replacement for typeid
-    LiveStacks() : MachineFunctionPass(&ID) {}
+    LiveStacks() : MachineFunctionPass(ID) {}
 
     typedef SS2IntervalMap::iterator iterator;
     typedef SS2IntervalMap::const_iterator const_iterator;
@@ -47,8 +47,6 @@ namespace llvm {
     const_iterator end() const { return S2IMap.end(); }
     iterator begin() { return S2IMap.begin(); }
     iterator end() { return S2IMap.end(); }
-
-    void scaleNumbering(int factor);
 
     unsigned getNumIntervals() const { return (unsigned)S2IMap.size(); }
 
@@ -93,7 +91,7 @@ namespace llvm {
       return I->second;
     }
 
-    BumpPtrAllocator& getVNInfoAllocator() { return VNInfoAllocator; }
+    VNInfo::Allocator& getVNInfoAllocator() { return VNInfoAllocator; }
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;
     virtual void releaseMemory();
@@ -102,10 +100,7 @@ namespace llvm {
     virtual bool runOnMachineFunction(MachineFunction&);
 
     /// print - Implement the dump method.
-    virtual void print(std::ostream &O, const Module* = 0) const;
-    void print(std::ostream *O, const Module* M = 0) const {
-      if (O) print(*O, M);
-    }
+    virtual void print(raw_ostream &O, const Module* = 0) const;
   };
 }
 

@@ -1,54 +1,64 @@
 add_llvm_library(LLVMCodeGen
+  AggressiveAntiDepBreaker.cpp
+  Analysis.cpp
   BranchFolding.cpp
+  CalcSpillWeights.cpp
+  CallingConvLower.cpp
   CodePlacementOpt.cpp
+  CriticalAntiDepBreaker.cpp
   DeadMachineInstructionElim.cpp
-  Dump.cpp
   DwarfEHPrepare.cpp
   ELFCodeEmitter.cpp
   ELFWriter.cpp
-  ExactHazardRecognizer.cpp
   GCMetadata.cpp
   GCMetadataPrinter.cpp
   GCStrategy.cpp
   IfConversion.cpp
+  InlineSpiller.cpp
   IntrinsicLowering.cpp
   LLVMTargetMachine.cpp
   LatencyPriorityQueue.cpp
-  LazyLiveness.cpp
   LiveInterval.cpp
   LiveIntervalAnalysis.cpp
   LiveStackAnalysis.cpp
   LiveVariables.cpp
+  LocalStackSlotAllocation.cpp
   LowerSubregs.cpp
-  MachOCodeEmitter.cpp
-  MachOWriter.cpp
   MachineBasicBlock.cpp
+  MachineCSE.cpp
   MachineDominators.cpp
   MachineFunction.cpp
   MachineFunctionAnalysis.cpp
   MachineFunctionPass.cpp
+  MachineFunctionPrinterPass.cpp
   MachineInstr.cpp
   MachineLICM.cpp
   MachineLoopInfo.cpp
   MachineModuleInfo.cpp
+  MachineModuleInfoImpls.cpp
   MachinePassRegistry.cpp
   MachineRegisterInfo.cpp
+  MachineSSAUpdater.cpp
   MachineSink.cpp
   MachineVerifier.cpp
   ObjectCodeEmitter.cpp
   OcamlGC.cpp
+  OptimizePHIs.cpp
   PHIElimination.cpp
   Passes.cpp
+  PeepholeOptimizer.cpp
+  PostRAHazardRecognizer.cpp
   PostRASchedulerList.cpp
   PreAllocSplitting.cpp
+  ProcessImplicitDefs.cpp
   PrologEpilogInserter.cpp
   PseudoSourceValue.cpp
+  RegAllocFast.cpp
   RegAllocLinearScan.cpp
-  RegAllocLocal.cpp
   RegAllocPBQP.cpp
-  RegAllocSimple.cpp
   RegisterCoalescer.cpp
   RegisterScavenging.cpp
+  RenderMachineFunction.cpp
   ScheduleDAG.cpp
   ScheduleDAGEmit.cpp
   ScheduleDAGInstrs.cpp
@@ -57,11 +67,16 @@ add_llvm_library(LLVMCodeGen
   ShrinkWrapping.cpp
   SimpleRegisterCoalescing.cpp
   SjLjEHPrepare.cpp
+  SlotIndexes.cpp
   Spiller.cpp
+  SplitKit.cpp
+  Splitter.cpp
   StackProtector.cpp
   StackSlotColoring.cpp
   StrongPHIElimination.cpp
+  TailDuplication.cpp
   TargetInstrInfoImpl.cpp
+  TargetLoweringObjectFileImpl.cpp
   TwoAddressInstructionPass.cpp
   UnreachableBlockElim.cpp
   VirtRegMap.cpp
